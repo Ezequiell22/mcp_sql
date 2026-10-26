@@ -1,5 +1,6 @@
 # Atlas SQL-generation MCP specification
 
+Current extension: [experimental SQL Server support](sqlserver-support.md) adds a separate dialect adapter and contract 1.1 while preserving PostgreSQL contract 1.0. The original PostgreSQL requirements below remain the baseline; SQL Server native/ODBC certification is still open.
 **Status:** target contract with an implemented supported subset. **Decisions confirmed:** 26 October 2026. This specification describes the standalone SQL-generation service. The [package guide](../README.md) and exported schemas document current runtime behavior.
 
 **Implementation coverage:** a separately installable [SQL MCP package](../README.md) now implements the two-tool workflow with native PostgreSQL parsing, scoped analysis, typed filters, authorized catalog access and isolated parser budgets. [The parser decision](sql-mcp-parser-decision.md) records the Python runtime choice. The package guide and exported schemas define actual supported-subset behavior; views, some type/overload cases, nullable parameters, real client/model evaluations, performance percentiles and reporting-consumer migration remain target work. The requirements below are not a claim that every release gate is complete.

@@ -11,7 +11,7 @@ import sqlglot
 from pglast import parser
 from sqlglot import exp
 from sqlglot.dialects import Dialect
-from sqlglot.errors import SqlglotError
+from sqlglot.errors import ErrorLevel, SqlglotError
 from sqlglot.lineage import lineage
 from sqlglot.optimizer.annotate_types import TypeAnnotator
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
@@ -648,7 +648,7 @@ def _pg_metadata() -> dict:
 
 class PostgresAnalyzer:
     def analyze(self, sql: str, catalog: Catalog) -> dict:
-        if catalog.postgres_major != 18:
+        if catalog.dialect != "postgresql" or catalog.postgres_major != 18:
             raise SqlError("UNSUPPORTED_DATABASE_VERSION", "Only PostgreSQL 18 is tested.")
         native_relations, params, functions = _native(sql, catalog)
         schema_data = {}
@@ -664,7 +664,7 @@ class PostgresAnalyzer:
             schema_data.setdefault(relation.schema, {})[relation.name] = cols
         schema = MappingSchema(schema_data, dialect="postgres", normalize=False)
         try:
-            parsed = sqlglot.parse(sql, read="postgres", error_level="RAISE")
+            parsed = sqlglot.parse(sql, read="postgres", error_level=ErrorLevel.RAISE)
             if len(parsed) != 1 or not isinstance(parsed[0], (exp.Select, exp.SetOperation)):
                 raise SqlError(
                     "UNSUPPORTED_SQL_FEATURE", "Resolver does not support this statement.", "sql"

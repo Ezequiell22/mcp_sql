@@ -1,0 +1,19 @@
+{
+  "connections": [
+    {
+      "id": "sales-sqlserver",
+      "dialect": "sqlserver",
+      "host": "sqlserver.example.test",
+      "port": 1433,
+      "dbname": "sales",
+      "user": "atlas_catalog_reader",
+      "passwordEnv": "ATLAS_SQLSERVER_PASSWORD",
+      "sslmode": "verify-full",
+      "grants": {
+        "local#REPLACE_WITH_OS_USERNAME": {
+          "dbo.orders": ["id", "ordered_on", "amount"]
+        }
+      }
+    }
+  ]
+}

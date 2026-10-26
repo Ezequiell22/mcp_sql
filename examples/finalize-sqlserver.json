@@ -1,0 +1,27 @@
+{
+  "contractVersion": "1.1",
+  "contextId": "REPLACE_WITH_RETURNED_CONTEXT_ID",
+  "sql": "SELECT o.id AS order_id, o.amount AS amount FROM dbo.orders AS o WHERE o.ordered_on >= CAST(@p1 AS date) AND o.ordered_on < CAST(@p2 AS date)",
+  "parameters": [
+    {"position": 1, "name": "period_from", "sqlType": "date", "nullable": false, "binding": {"filterId": "period", "field": "from"}},
+    {"position": 2, "name": "period_until", "sqlType": "date", "nullable": false, "binding": {"filterId": "period", "field": "until"}}
+  ],
+  "filters": [
+    {
+      "id": "period", "label": "Order period", "kind": "date_range", "required": true,
+      "fields": {
+        "from": {"type": "date", "parameterPosition": 1, "inclusive": true, "nullable": false},
+        "until": {"type": "date", "parameterPosition": 2, "inclusive": false, "nullable": false}
+      },
+      "validation": {"ordering": "from < until"}
+    }
+  ],
+  "outputs": [{"key": "order_id", "label": "Order ID", "sqlType": "int"}, {"key": "amount", "label": "Amount", "sqlType": "decimal(20,2)"}],
+  "semantics": {
+    "grain": ["order_id"],
+    "countedEntities": [],
+    "measures": [{"outputKey": "amount", "definition": "Stored order amount; currency and accounting definition must be confirmed."}],
+    "assumptions": ["The host confirmed the order amount definition and date boundaries."],
+    "resolvedDecisions": ["Use an inclusive from date and exclusive until date."]
+  }
+}

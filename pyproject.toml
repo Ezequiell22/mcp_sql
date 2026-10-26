@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "atlas-sql-mcp"
 version = "0.1.0"
-description = "Standalone, catalog-only PostgreSQL SQL-generation MCP"
+description = "Standalone, catalog-only PostgreSQL and SQL Server SQL-generation MCP"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -22,10 +22,12 @@ dependencies = [
 Repository = "https://github.com/Ezequiell22/mcp_sql"
 
 [project.optional-dependencies]
+sqlserver = ["pyodbc==5.3.0"]
 test = ["pytest==9.1.1", "httpx2==2.16.0"]
 
 [project.scripts]
 atlas-sql-mcp = "atlas_sql_mcp.server:main"
+atlas-sql-check = "atlas_sql_mcp.check:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

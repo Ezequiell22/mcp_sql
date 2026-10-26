@@ -1,0 +1,2 @@
+-r requirements.lock
+pyodbc==5.3.0

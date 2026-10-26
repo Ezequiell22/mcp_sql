@@ -1,5 +1,6 @@
 # Standalone SQL analyzer decision
 
+Current extension: [experimental SQL Server support](sqlserver-support.md) adds a separate dialect adapter and contract 1.1 while preserving PostgreSQL contract 1.0. The original PostgreSQL requirements below remain the baseline; SQL Server native/ODBC certification is still open.
 Status: implemented parser choice for the standalone service; advanced release gates remain open. Date: 26 October 2026.
 
 The original reporting application uses Java 21, Spring and JSqlParser 4.9 to enforce a deliberately narrow single-source SQL policy. Relaxing that policy would expand reporting execution permissions and would not supply PostgreSQL-native parsing, advanced catalog/type resolution, or isolated analysis budgets.

@@ -20,11 +20,13 @@ class Connection:
     password_env: str
     sslmode: str
     grants: dict[str, dict[str, tuple[str, ...]]]
+    dialect: str = "postgresql"
 
     @property
     def policy_version(self) -> str:
         return digest(
             {
+                "dialect": self.dialect,
                 "id": self.id,
                 "host": self.host,
                 "port": self.port,
@@ -71,7 +73,7 @@ def load_connections(path: Path) -> dict[str, Connection]:
     result = {}
     required = {"id", "host", "port", "dbname", "user", "passwordEnv", "sslmode", "grants"}
     for raw in data["connections"]:
-        if set(raw) != required:
+        if set(raw) not in (required, required | {"dialect"}):
             raise ValueError("Connection configuration has missing or unknown fields.")
         if any(
             not isinstance(raw[k], str) or not raw[k] or len(raw[k]) > 256
@@ -90,6 +92,11 @@ def load_connections(path: Path) -> dict[str, Connection]:
             loopback = ipaddress.ip_address(raw["host"]).is_loopback
         except ValueError:
             loopback = False
+        dialect = raw.get("dialect", "postgresql")
+        if dialect not in {"postgresql", "sqlserver"}:
+            raise ValueError("Unsupported database dialect.")
+        if dialect == "sqlserver" and (raw["sslmode"] != "verify-full" or not raw["passwordEnv"]):
+            raise ValueError("SQL Server requires verified TLS and a passwordEnv reference.")
         if raw["sslmode"] != "verify-full" and not (
             loopback and raw["sslmode"] in {"disable", "require"}
         ):
@@ -137,6 +144,7 @@ def load_connections(path: Path) -> dict[str, Connection]:
             raw["passwordEnv"],
             raw["sslmode"],
             frozen_grants,
+            dialect,
         )
         if connection.id in result:
             raise ValueError("Duplicate connection identifier.")

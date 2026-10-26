@@ -1,5 +1,7 @@
 """Closed JSON Schemas used for MCP discovery and runtime input/output validation."""
 
+from copy import deepcopy
+
 from jsonschema import Draft202012Validator
 
 from .domain import SqlError
@@ -290,9 +292,87 @@ ARTIFACT = obj(
 FINALIZE_SUCCESS = obj({"status": {"const": "validated"}, "artifact": ARTIFACT})
 CONTEXT_OUTPUT = {"type": "object", "oneOf": [CONTEXT_SUCCESS, ERROR]}
 FINALIZE_OUTPUT = {"type": "object", "oneOf": [FINALIZE_SUCCESS, ERROR]}
+# Contract 1.0 is unchanged for PostgreSQL. SQL Server uses 1.1 and neutral
+# sqlType/databaseMajorVersion names, never PostgreSQL-labelled T-SQL metadata.
+
+
+def sqlserver_schema(schema):
+    if isinstance(schema, list):
+        return [sqlserver_schema(item) for item in schema]
+    if not isinstance(schema, dict):
+        return "sqlType" if schema == "postgresType" else schema
+    result = {}
+    for key, value in schema.items():
+        key = {
+            "postgresType": "sqlType",
+            "postgresMajorVersion": "databaseMajorVersion",
+            "postgresMajorVersions": "databaseMajorVersions",
+        }.get(key, key)
+        if key == "contractVersion":
+            result[key] = {"const": "1.1"}
+        elif key == "dialect":
+            result[key] = {"const": "sqlserver"}
+        elif key == "databaseMajorVersion":
+            result[key] = {"enum": [16, 17]}
+        elif key == "requiredSessionSettings":
+            result[key] = obj(
+                {
+                    k: {"const": "ON"}
+                    for k in ("QUOTED_IDENTIFIER", "ANSI_NULLS", "ANSI_WARNINGS", "ARITHABORT")
+                }
+            )
+        else:
+            result[key] = sqlserver_schema(value)
+    # Required property names are data, not dict keys.
+    if isinstance(result.get("required"), list):
+        result["required"] = [
+            {
+                "postgresMajorVersion": "databaseMajorVersion",
+                "postgresMajorVersions": "databaseMajorVersions",
+            }.get(k, k)
+            for k in result["required"]
+        ]
+    return result
+
+
+SQLSERVER_CONTEXT = sqlserver_schema(CONTEXT_SUCCESS)
+SQLSERVER_ARTIFACT = sqlserver_schema(ARTIFACT)
+SQLSERVER_ARTIFACT["properties"]["validation"]["properties"]["syntax"] = {
+    "const": "passed_static_subset"
+}
+SQLSERVER_FINALIZE_INPUT = sqlserver_schema(FINALIZE_INPUT)
+SQLSERVER_FINALIZE_SUCCESS = obj({"status": {"const": "validated"}, "artifact": SQLSERVER_ARTIFACT})
+MULTI_CONTEXT_INPUT = deepcopy(CONTEXT_INPUT)
+MULTI_CONTEXT_INPUT["properties"]["contractVersion"] = {"enum": ["1.0", "1.1"]}
+MULTI_FINALIZE_INPUT = deepcopy(FINALIZE_INPUT)
+MULTI_FINALIZE_INPUT["properties"]["contractVersion"] = {"enum": ["1.0", "1.1"]}
+MULTI_FINALIZE_INPUT["properties"]["parameters"] = array(
+    {"oneOf": [PARAMETER, sqlserver_schema(PARAMETER)]}
+)
+MULTI_FINALIZE_INPUT["properties"]["outputs"] = array(
+    {"anyOf": [OUTPUT_DECLARATION, sqlserver_schema(OUTPUT_DECLARATION)]}
+)
+MULTI_FINALIZE_INPUT["allOf"] = [
+    {
+        "if": {"properties": {"contractVersion": {"const": version}}},
+        "then": {
+            "properties": {
+                "parameters": variant["properties"]["parameters"],
+                "outputs": variant["properties"]["outputs"],
+            }
+        },
+    }
+    for version, variant in [("1.0", FINALIZE_INPUT), ("1.1", SQLSERVER_FINALIZE_INPUT)]
+]
 SCHEMAS = {
-    "atlas_sql_context_get": (CONTEXT_INPUT, CONTEXT_OUTPUT),
-    "atlas_sql_finalize": (FINALIZE_INPUT, FINALIZE_OUTPUT),
+    "atlas_sql_context_get": (
+        MULTI_CONTEXT_INPUT,
+        {"type": "object", "oneOf": [CONTEXT_SUCCESS, SQLSERVER_CONTEXT, ERROR]},
+    ),
+    "atlas_sql_finalize": (
+        MULTI_FINALIZE_INPUT,
+        {"type": "object", "oneOf": [FINALIZE_SUCCESS, SQLSERVER_FINALIZE_SUCCESS, ERROR]},
+    ),
 }
 
 

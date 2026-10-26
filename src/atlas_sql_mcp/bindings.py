@@ -74,7 +74,14 @@ def _default(field: dict, datatype: str) -> None:
 
 
 def validate_bindings(
-    parameters: list[dict], filters: list[dict], analyzed: dict[int, str]
+    parameters: list[dict],
+    filters: list[dict],
+    analyzed: dict[int, str],
+    *,
+    type_key="postgresType",
+    normalize=normalize_type,
+    logical=logical_type,
+    default_check=_default,
 ) -> None:
     by_position = {p["position"]: p for p in parameters}
     if len(by_position) != len(parameters) or set(by_position) != set(analyzed):
@@ -101,10 +108,10 @@ def validate_bindings(
             fields[position] = field
             if parameter["binding"] != {"filterId": item["id"], "field": name}:
                 _fail("Filter and parameter bindings disagree.")
-            datatype = normalize_type(parameter["postgresType"])
+            datatype = normalize(parameter[type_key])
             if datatype != analyzed[position] or parameter["nullable"] != field["nullable"]:
                 _fail("Parameter type or nullability disagrees with its SQL cast/field.")
-            kind = logical_type(datatype)
+            kind = logical(datatype)
             expected_kind = {"identifier": "text", "json": "text"}.get(kind, kind)
             if field["type"] != expected_kind and not (
                 field["type"] == "enum" and expected_kind == "text"
@@ -154,7 +161,7 @@ def validate_bindings(
                 and Decimal(field["minimum"]) > Decimal(field["maximum"])
             ):
                 _fail("Minimum exceeds maximum.")
-            _default(field, datatype)
+            default_check(field, datatype)
         if ranged:
             a, b = (item["fields"][n] for n in ("from", "until"))
             if a["type"] != b["type"]:

@@ -15,10 +15,20 @@ from .budget import request_budget
 from .contracts import SCHEMAS, validate
 from .domain import AnalyzerPort, Catalog, CatalogPort, Principal, SqlError, canonical, digest
 
-POLICY_REVISION = "atlas-sql-policy-1"
+POLICY_REVISION = "atlas-sql-policy-2"
 INPUT_BYTES = 512 * 1024
 OUTPUT_BYTES = 1024 * 1024
 CONTEXT_SECONDS = 600
+
+
+def validate_contract_version(args: dict, catalog: Catalog) -> None:
+    expected = "1.1" if catalog.dialect == "sqlserver" else "1.0"
+    if args["contractVersion"] != expected:
+        raise SqlError(
+            "INVALID_CONTRACT",
+            f"This connection requires contractVersion {expected}.",
+            "contractVersion",
+        )
 
 
 def iso(timestamp: float) -> str:
@@ -161,6 +171,7 @@ class SqlService:
             if args.get("cursor"):
                 raise SqlError("INVALID_CONTRACT", "A cursor requires its original contextId.")
             catalog = self.catalog.load(principal, args["connectionId"])
+            validate_contract_version(args, catalog)
             context = Context(
                 principal,
                 digest(args["request"]),
@@ -179,6 +190,7 @@ class SqlService:
                         "RATE_LIMITED", "Context storage budget reached.", retryable=True
                     )
                 self._contexts[key] = context
+        validate_contract_version(args, catalog)
         focus = args.get("focus", {})
         page_size = args.get("pageSize", 25)
         focus_hash = digest([focus, page_size])
@@ -226,6 +238,7 @@ class SqlService:
                 self._cursors[next_cursor] = Cursor(
                     principal, key, focus_hash, offset + len(page), context.expires
                 )
+        type_key = "sqlType" if catalog.dialect == "sqlserver" else "postgresType"
         payload = []
         for relation in page:
             payload.append(
@@ -238,7 +251,7 @@ class SqlService:
                     "columns": [
                         {
                             "name": c.name,
-                            "postgresType": c.postgres_type,
+                            type_key: c.postgres_type,
                             "nullable": c.nullable,
                             "description": c.description,
                             "descriptionProvenance": "untrusted_database_comment",
@@ -268,17 +281,21 @@ class SqlService:
             )
         return {
             "status": "context",
-            "contractVersion": "1.0",
+            "contractVersion": "1.1" if catalog.dialect == "sqlserver" else "1.0",
             "contextId": key,
             "expiresAt": iso(context.expires),
             "connectionId": catalog.connection_id,
-            "dialect": "postgresql",
-            "postgresMajorVersion": catalog.postgres_major,
+            "dialect": catalog.dialect,
+            **(
+                {"databaseMajorVersion": catalog.database_major}
+                if catalog.dialect == "sqlserver"
+                else {"postgresMajorVersion": catalog.postgres_major}
+            ),
             "timezone": self.timezone,
             "clock": iso(now),
             "metadataFingerprint": context.fingerprint,
             "policyVersion": context.policy_version,
-            "capabilities": self.capabilities(),
+            "capabilities": self.capabilities(catalog.dialect),
             "relations": payload,
             "businessDefinitions": [{"status": "not_configured"}],
             "coverage": "partial"
@@ -297,7 +314,39 @@ class SqlService:
         }
 
     @staticmethod
-    def capabilities() -> dict:
+    def capabilities(dialect="postgresql") -> dict:
+        if dialect == "sqlserver":
+            from .sqlserver import FUNCTIONS as TSQL_FUNCTIONS
+            from .sqlserver import SESSION_SETTINGS
+
+            base = SqlService.capabilities()
+            base.pop("postgresMajorVersions")
+            base["databaseMajorVersions"] = [16, 17]
+            base["requiredSessionSettings"] = dict(SESSION_SETTINGS)
+            base["features"] = [
+                "qualified_base_tables",
+                "governed_joins",
+                "nonrecursive_ctes",
+                "derived_tables",
+                "numeric_aggregates",
+                "conditional_aggregates",
+                "ranking_windows",
+                "typed_named_parameters",
+                "ordered_top",
+            ]
+            base["unsupported"] += [
+                "native_server_syntax_verification",
+                "set_operations",
+                "recursive_ctes",
+                "aggregate_windows",
+                "implicit_type_coercion",
+                "decimal_scale_reduction",
+                "query_hints",
+                "temporal_tables",
+                "computed_or_masked_columns",
+            ]
+            base["approvedFunctions"] = sorted(TSQL_FUNCTIONS | {"cast"})
+            return base
         return {
             "postgresMajorVersions": [18],
             "features": [
@@ -344,8 +393,26 @@ class SqlService:
         context = self._get(args["contextId"], principal)
         deadline = time.monotonic() + 10
         catalog = self._fresh(context, principal)
+        type_key = "sqlType" if catalog.dialect == "sqlserver" else "postgresType"
+        validate_contract_version(args, catalog)
         analysis = self.analyzer.analyze(args["sql"], catalog)
-        validate_bindings(args["parameters"], args["filters"], analysis["parameters"])
+        normalize = normalize_type
+        binding_options = {}
+        if catalog.dialect == "sqlserver":
+            from .sqlserver import check_default
+            from .sqlserver import logical_type as tsql_logical
+            from .sqlserver import normalize_type as tsql_normalize
+
+            normalize = tsql_normalize
+            binding_options = {
+                "type_key": type_key,
+                "normalize": normalize,
+                "logical": tsql_logical,
+                "default_check": check_default,
+            }
+        validate_bindings(
+            args["parameters"], args["filters"], analysis["parameters"], **binding_options
+        )
         for item in args["filters"]:
             if item["kind"].endswith("_range"):
                 expressions, clauses = set(), set()
@@ -390,10 +457,7 @@ class SqlService:
         outputs = []
         for derived in analysis["outputs"]:
             supplied = declared[derived["key"]]
-            if (
-                "postgresType" in supplied
-                and normalize_type(supplied["postgresType"]) != derived["postgresType"]
-            ):
+            if type_key in supplied and normalize(supplied[type_key]) != derived[type_key]:
                 raise SqlError(
                     "OUTPUT_CONTRACT_MISMATCH",
                     "Declared output type disagrees with analyzed type.",
@@ -422,9 +486,13 @@ class SqlService:
                 "CONTEXT_EXPIRED", "Context expired during analysis; request fresh context."
             )
         artifact = {
-            "contractVersion": "1.0",
-            "dialect": "postgresql",
-            "postgresMajorVersion": catalog.postgres_major,
+            "contractVersion": "1.1" if catalog.dialect == "sqlserver" else "1.0",
+            "dialect": catalog.dialect,
+            **(
+                {"databaseMajorVersion": catalog.database_major}
+                if catalog.dialect == "sqlserver"
+                else {"postgresMajorVersion": catalog.postgres_major}
+            ),
             "sql": args["sql"],
             "parameters": sorted(deepcopy(args["parameters"]), key=lambda p: p["position"]),
             "filters": deepcopy(args["filters"]),
@@ -435,9 +503,11 @@ class SqlService:
                 "metadataFingerprint": context.fingerprint,
                 "policyVersion": context.policy_version,
             },
-            "requiredSessionSettings": {"search_path": "pg_catalog"},
+            "requiredSessionSettings": self.capabilities("sqlserver")["requiredSessionSettings"]
+            if catalog.dialect == "sqlserver"
+            else {"search_path": "pg_catalog"},
             "validation": {
-                "syntax": "passed",
+                "syntax": "passed_static_subset" if catalog.dialect == "sqlserver" else "passed",
                 "resolution": "passed_supported_subset",
                 "authorization": "passed",
                 "readOnlyPolicy": "passed",
@@ -451,8 +521,10 @@ class SqlService:
                 "limitations": [
                     "Business definitions and declared grain are host assertions, not proof of language-to-SQL equivalence.",
                     "Null output nullability means unknown; no nonnull guarantee is issued.",
-                    "Supported static types do not prove all PostgreSQL coercion/overload semantics.",
-                    "Execution requires fresh consumer authorization, dependency checks, and enforced search_path=pg_catalog.",
+                    "Supported static types do not prove all database coercion/overload semantics.",
+                    "SQL Server native syntax is not verified; only the published static subset is checked."
+                    if catalog.dialect == "sqlserver"
+                    else "Execution requires fresh consumer authorization, dependency checks, and enforced search_path=pg_catalog.",
                 ],
             },
             "warnings": analysis["warnings"],

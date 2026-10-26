@@ -73,6 +73,8 @@ class PostgresCatalog:
                 "CONNECTION_NOT_AUTHORIZED", "Connection is unavailable for this identity."
             )
         grants = config.authorized(principal)
+        if config.dialect != "postgresql":
+            raise SqlError("UNSUPPORTED_DIALECT", "PostgreSQL adapter received another dialect.")
         try:
             kwargs = config.connect_kwargs()
             # libpq enforces a minimum of two seconds for connect_timeout.

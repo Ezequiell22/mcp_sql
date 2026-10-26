@@ -89,6 +89,8 @@ class Catalog:
     postgres_major: int
     relations: tuple[Relation, ...]
     policy_version: str
+    dialect: str = "postgresql"
+    database_major: int | None = None
 
     @property
     def fingerprint(self) -> str:

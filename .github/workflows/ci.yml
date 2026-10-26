@@ -25,9 +25,10 @@ jobs:
           python -m pip install ruff==0.17.2
       - name: Source and schema consistency
         run: |
-          ruff check src tests
-          ruff format --check src tests
+          ruff check src tests scripts
+          ruff format --check src tests scripts
           python -m atlas_sql_mcp.contracts schemas --check
+          python scripts/verify.py --checks-only
           git diff --check
       - name: Prepare disposable integration image
         run: docker pull postgres:18

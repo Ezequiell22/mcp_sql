@@ -27,7 +27,12 @@ def catalog_from_dict(raw: dict) -> Catalog:
         value["descendants"] = tuple(value["descendants"])
         relations.append(Relation(**value))
     return Catalog(
-        raw["connection_id"], raw["postgres_major"], tuple(relations), raw["policy_version"]
+        raw["connection_id"],
+        raw["postgres_major"],
+        tuple(relations),
+        raw["policy_version"],
+        raw.get("dialect", "postgresql"),
+        raw.get("database_major"),
     )
 
 
@@ -88,7 +93,16 @@ def main() -> None:
         from .analyzer import PostgresAnalyzer
 
         raw = json.loads(sys.stdin.read(2 * 1024 * 1024))
-        result = PostgresAnalyzer().analyze(raw["sql"], catalog_from_dict(raw["catalog"]))
+        catalog = catalog_from_dict(raw["catalog"])
+        if catalog.dialect == "sqlserver":
+            from .sqlserver import SqlServerAnalyzer
+
+            analyzer = SqlServerAnalyzer()
+        elif catalog.dialect == "postgresql":
+            analyzer = PostgresAnalyzer()
+        else:
+            raise SqlError("UNSUPPORTED_DIALECT", "No analyzer is configured for this dialect.")
+        result = analyzer.analyze(raw["sql"], catalog)
     except SqlError as error:
         result = error.envelope()
     except Exception:

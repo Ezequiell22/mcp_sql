@@ -1,0 +1,42 @@
+{
+  "connections": [
+    {
+      "id": "sales-readonly",
+      "dialect": "postgresql",
+      "host": "REPLACE_WITH_POSTGRES_HOST",
+      "port": 5432,
+      "dbname": "REPLACE_WITH_DATABASE_NAME",
+      "user": "REPLACE_WITH_READONLY_DATABASE_USER",
+      "passwordEnv": "ATLAS_SALES_DB_PASSWORD",
+      "sslmode": "verify-full",
+      "grants": {
+        "local#ezequielmenegas": {
+          "public.orders": [
+            "id",
+            "ordered_on",
+            "net_total"
+          ]
+        }
+      }
+    },
+    {
+      "id": "sales-sqlserver",
+      "dialect": "sqlserver",
+      "host": "REPLACE_WITH_SQLSERVER_HOST",
+      "port": 1433,
+      "dbname": "REPLACE_WITH_DATABASE_NAME",
+      "user": "REPLACE_WITH_READONLY_DATABASE_USER",
+      "passwordEnv": "ATLAS_SQLSERVER_PASSWORD",
+      "sslmode": "verify-full",
+      "grants": {
+        "local#ezequielmenegas": {
+          "dbo.orders": [
+            "id",
+            "ordered_on",
+            "amount"
+          ]
+        }
+      }
+    }
+  ]
+}
