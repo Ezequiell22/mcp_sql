@@ -1,0 +1,83 @@
+{
+  "contractVersion": "1.0",
+  "contextId": "REPLACE_WITH_RETURNED_CONTEXT_ID",
+  "sql": "SELECT c.id AS customer_id, c.name AS customer_name, SUM(o.net_total) AS revenue FROM public.orders AS o JOIN public.customers AS c ON c.id = o.customer_id WHERE o.ordered_on >= $1::date AND o.ordered_on < $2::date GROUP BY c.id, c.name ORDER BY c.id",
+  "parameters": [
+    {
+      "position": 1,
+      "name": "period_start",
+      "postgresType": "date",
+      "nullable": false,
+      "binding": {
+        "filterId": "period",
+        "field": "from"
+      }
+    },
+    {
+      "position": 2,
+      "name": "period_until",
+      "postgresType": "date",
+      "nullable": false,
+      "binding": {
+        "filterId": "period",
+        "field": "until"
+      }
+    }
+  ],
+  "filters": [
+    {
+      "id": "period",
+      "label": "Período dos pedidos",
+      "kind": "date_range",
+      "required": true,
+      "fields": {
+        "from": {
+          "type": "date",
+          "nullable": false,
+          "parameterPosition": 1,
+          "inclusive": true
+        },
+        "until": {
+          "type": "date",
+          "nullable": false,
+          "parameterPosition": 2,
+          "inclusive": false
+        }
+      },
+      "validation": {
+        "ordering": "from < until"
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "key": "customer_id",
+      "label": "Cliente"
+    },
+    {
+      "key": "customer_name",
+      "label": "Nome do cliente"
+    },
+    {
+      "key": "revenue",
+      "label": "Receita líquida",
+      "postgresType": "numeric"
+    }
+  ],
+  "semantics": {
+    "grain": [
+      "customer_id"
+    ],
+    "countedEntities": [],
+    "measures": [
+      {
+        "outputKey": "revenue",
+        "definition": "SUM of the approved order-level net_total measure."
+      }
+    ],
+    "assumptions": [
+      "Confirm net_total meaning, currency and cancellation rules with the data owner before adopting this example."
+    ],
+    "resolvedDecisions": []
+  }
+}

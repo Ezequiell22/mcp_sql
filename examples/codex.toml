@@ -1,0 +1,6 @@
+# Merge into your own MCP host configuration after installing this package.
+# Use absolute paths; replace the example paths and provision the credential
+# outside model-visible tool arguments (or use a protected libpq passfile).
+[mcp_servers.atlas_sql]
+command = "/absolute/path/mcp-sql/.venv/bin/atlas-sql-mcp"
+args = ["--connections", "/absolute/path/connections.local.json"]

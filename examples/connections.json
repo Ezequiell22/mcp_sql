@@ -1,0 +1,19 @@
+{
+  "connections": [
+    {
+      "id": "sales-readonly",
+      "host": "127.0.0.1",
+      "port": 5432,
+      "dbname": "sales",
+      "user": "atlas_catalog_reader",
+      "passwordEnv": "ATLAS_SALES_DB_PASSWORD",
+      "sslmode": "disable",
+      "grants": {
+        "local#REPLACE_WITH_OS_USERNAME": {
+          "public.customers": ["id", "name"],
+          "public.orders": ["id", "customer_id", "ordered_on", "net_total"]
+        }
+      }
+    }
+  ]
+}

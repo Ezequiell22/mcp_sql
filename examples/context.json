@@ -1,0 +1,17 @@
+{
+  "contractVersion": "1.0",
+  "connectionId": "sales-readonly",
+  "request": "Receita por cliente no período informado.",
+  "focus": {
+    "relations": [
+      "public.orders",
+      "public.customers"
+    ],
+    "include": [
+      "columns",
+      "relationships",
+      "businessDefinitions"
+    ]
+  },
+  "pageSize": 25
+}

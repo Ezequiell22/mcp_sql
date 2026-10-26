@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "contractVersion": {
+      "const": "1.0"
+    },
+    "connectionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "request": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
+    },
+    "contextId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "focus": {
+      "type": "object",
+      "properties": {
+        "search": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxItems": 100
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "columns",
+              "relationships",
+              "businessDefinitions"
+            ]
+          },
+          "maxItems": 3
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "pageSize": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    }
+  },
+  "required": [
+    "contractVersion",
+    "connectionId",
+    "request"
+  ],
+  "additionalProperties": false
+}

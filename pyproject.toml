@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atlas-sql-mcp"
+version = "0.1.0"
+description = "Standalone, catalog-only PostgreSQL SQL-generation MCP"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "mcp==2.3.0",
+  "pglast==8.7",
+  "sqlglot==30.25.0",
+  "psycopg[binary]==3.3.6",
+  "jsonschema==4.26.0",
+  "PyJWT[crypto]==2.15.1",
+  "uvicorn==0.54.0",
+]
+
+[project.urls]
+Repository = "https://github.com/Ezequiell22/mcp_sql"
+
+[project.optional-dependencies]
+test = ["pytest==9.1.1", "httpx2==2.16.0"]
+
+[project.scripts]
+atlas-sql-mcp = "atlas_sql_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]

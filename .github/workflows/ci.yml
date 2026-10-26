@@ -1,0 +1,39 @@
+name: Verify SQL MCP
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install pinned dependencies and package
+        run: |
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps -e .
+          python -m pip install ruff==0.17.2
+      - name: Source and schema consistency
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+          python -m atlas_sql_mcp.contracts schemas --check
+          git diff --check
+      - name: Prepare disposable integration image
+        run: docker pull postgres:18
+      - name: Test standalone service with disposable PostgreSQL
+        env:
+          ALLOW_SYNTHETIC_DB_WRITES: '1'
+        run: python -m pytest
+      - name: Build independent package
+        run: python -m pip wheel --no-deps . --wheel-dir dist
