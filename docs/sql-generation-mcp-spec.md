@@ -1,5 +1,9 @@
 # Atlas SQL-generation MCP specification
 
+> Update: [optional LangChain generation](langchain-generation.md) supersedes the
+> original host-only/two-tool restriction when `ATLAS_SQL_MODEL` is configured.
+> Catalog-only database access and deterministic validation remain unchanged.
+
 Current extension: [experimental SQL Server support](sqlserver-support.md) adds a separate dialect adapter and contract 1.1 while preserving PostgreSQL contract 1.0. The original PostgreSQL requirements below remain the baseline; SQL Server native/ODBC certification is still open.
 **Status:** target contract with an implemented supported subset. **Decisions confirmed:** 26 October 2026. This specification describes the standalone SQL-generation service. The [package guide](../README.md) and exported schemas document current runtime behavior.
 

@@ -1,5 +1,9 @@
 # SQL Server adapter and generation quality
 
+> Update: [optional LangChain generation](langchain-generation.md) supersedes the
+> original host-only/two-tool restriction when `ATLAS_SQL_MODEL` is configured.
+> Catalog-only database access and deterministic validation remain unchanged.
+
 Status: **experimental static subset**, added 26 October 2026. PostgreSQL 18 remains the destination with automated native integration evidence. SQL Server 2022/2025 (major 16/17) are accepted metadata targets, not a claim of native-engine certification. Do not promote this adapter to production until the release gates below pass.
 
 ## Operator setup

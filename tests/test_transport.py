@@ -83,9 +83,17 @@ def test_unsigned_token_rejected(signing_key):
     assert asyncio.run(verifier(signing_key).verify_token(unsigned)) is None
 
 
-def test_shared_http_complete_flow_and_authentication(service, signing_key):
+@pytest.mark.parametrize("with_generation", [False, True])
+def test_shared_http_complete_flow_and_authentication(service, signing_key, with_generation):
     async def run():
-        server = build_server(service)
+        generator = None
+        if with_generation:
+            from test_generation import PLAN, Model, proposal
+
+            from atlas_sql_mcp.generation import SqlGenerator
+
+            generator = SqlGenerator(service, Model(PLAN, proposal()))
+        server = build_server(service, generator=generator)
         app = server.streamable_http_app(
             stateless_http=True,
             json_response=True,
@@ -125,7 +133,7 @@ def test_shared_http_complete_flow_and_authentication(service, signing_key):
                         assert {t.name for t in tools} == {
                             "atlas_sql_context_get",
                             "atlas_sql_finalize",
-                        }
+                        } | ({"atlas_sql_generate"} if with_generation else set())
                         assert all(
                             t.input_schema["additionalProperties"] is False and t.output_schema
                             for t in tools
@@ -151,6 +159,17 @@ def test_shared_http_complete_flow_and_authentication(service, signing_key):
                             ]
                             is False
                         )
+                        if with_generation:
+                            generated = await session.call_tool(
+                                "atlas_sql_generate",
+                                {
+                                    "contractVersion": "1.0",
+                                    "connectionId": "sales",
+                                    "request": "List order IDs",
+                                },
+                            )
+                            assert not generated.is_error, generated
+                            assert generated.structured_content["status"] == "validated"
                         client.headers["Authorization"] = "Bearer " + token(
                             signing_key, sub="another-user"
                         )

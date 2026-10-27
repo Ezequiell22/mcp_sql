@@ -1,14 +1,22 @@
 # MCP SQL — Atlas
 
-Standalone PostgreSQL and SQL Server SQL-generation support for the LLM in Codex, Claude, or another MCP host. It reads authorized database catalog metadata and validates host-written SQL. It returns the original SQL, typed parameters, filters, result metadata, lineage, assumptions, and validation evidence. It has **exactly two tools**, no model provider, no report lifecycle, no query execution, and no dependency on the Java reporting service or its metadata database.
+Standalone PostgreSQL and SQL Server SQL-generation support for the LLM in Codex, Claude, or another MCP host. It reads authorized database catalog metadata and validates host-written SQL. It returns the original SQL, typed parameters, filters, result metadata, lineage, assumptions, and validation evidence. It preserves two catalog/validation tools and optionally exposes `atlas_sql_generate` through a small LangChain pipeline. It has no report lifecycle, query execution, or dependency on the Java reporting service.
 
 This repository contains only the SQL-generation core. Reporting applications, web interfaces, persistence and query execution are separate consumers, with their own authorization and execution policies. The [target specification](docs/sql-generation-mcp-spec.md) includes broader acceptance gates; see the implementation limits below before treating the package as a complete PostgreSQL server analyzer.
+
+## LangChain: text to validated SQL
+
+Set `ATLAS_SQL_MODEL` to enable `atlas_sql_generate`: request clarification/refinement,
+structured SQL generation, deterministic validation, and at most three drafts.
+The original request remains authoritative. Ambiguities return questions; queries
+are never executed. Only the required LangChain components are installed.
+See [setup, prompts, limits and verification](docs/langchain-generation.md).
 
 ## SQL Server and one-query generation
 
 PostgreSQL 18 retains contract 1.0. A separate **experimental SQL Server adapter** targets major versions 16/17 using contract 1.1, native T-SQL type declarations and `CAST(@p1 AS type)` parameters. It has isolated static analysis, fixed catalog queries, per-column permission checks and verified TLS. Its accepted subset includes joins, CTEs, aggregation, CASE/COALESCE and ranking. Unsupported syntax/types fail explicitly. It has not yet passed native SQL Server/ODBC certification; artifacts state `passed_static_subset` rather than claiming server-native syntax verification.
 
-See [SQL Server setup, capabilities, bounded host repair workflow and release gates](docs/sqlserver-support.md), [connection configuration](examples/connections-sqlserver.json), and [finalization example](examples/finalize-sqlserver.json). The host generates one complete SQL statement and may repair structured errors for up to three attempts. The MCP continues to expose exactly two tools and makes no model calls. An agent loop cannot by itself prove business correctness or an efficient query plan.
+See [SQL Server setup, capabilities, bounded host repair workflow and release gates](docs/sqlserver-support.md), [connection configuration](examples/connections-sqlserver.json), and [finalization example](examples/finalize-sqlserver.json). The host generates one complete SQL statement and may repair structured errors for up to three attempts. Without optional generation configured, the MCP exposes the original two tools and makes no model calls. An agent loop cannot by itself prove business correctness or an efficient query plan.
 
 Run `.venv/bin/python scripts/verify.py` for Python syntax, local documentation links, schema consistency and isolated tests. The offline `atlas-sql-check --dialect sqlserver query.sql` diagnostic checks syntax only and never issues an artifact. SQL Server dependencies are optional and pinned in [requirements-sqlserver.lock](requirements-sqlserver.lock).
 
@@ -77,7 +85,7 @@ Only `ATLAS_SQL_TIMEZONE` is optional (default `UTC`, valid IANA timezone). SQL 
 1. `atlas_sql_context_get`: `contractVersion: "1.0"`, `connectionId`, and natural-language `request`; optional focused search, relation list, included details, and page size. Returns an opaque ten-minute handle, authorized catalog, constraints, capabilities, metadata/policy fingerprints, clock/timezone, coverage, and a cursor. Follow-up calls retain request, connection, context, and exact focus/page size when following a cursor.
 2. `atlas_sql_finalize`: `contextId`, host-written `sql`, `parameters`, `filters`, `outputs`, and `semantics`. Rechecks identity, schema, policy, syntax, nested dependencies, supported types, join grain risks, binding and output contracts, and freshness again after analysis. Returns a portable artifact or a safe structured error. It cannot infer every unresolved business choice; the host asks the user before calling it.
 
-[Context request](examples/context.json) and [finalization request](examples/finalize.json) examples match the implemented schemas. Replace the finalization example's context ID with the returned handle and confirm its schema/business assumptions before use. The host constructs these requests from the user's question and metadata; the server does not call a model.
+[Context request](examples/context.json) and [finalization request](examples/finalize.json) examples match the implemented schemas. Replace the finalization example's context ID with the returned handle and confirm its schema/business assumptions before use. In host mode, the client constructs these requests. In LangChain mode, the server orchestrates the same context and validation calls.
 
 [Executable schemas](schemas/) are exported from the same definitions the server validates. After intentionally changing the contract, regenerate with `python -m atlas_sql_mcp.contracts schemas`; `--check` detects stale exports. The [specification example](docs/sql-generation-mcp-spec.md#output-and-binding-contract) explains the full target artifact; the exported schemas are the implemented wire contract.
 

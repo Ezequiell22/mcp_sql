@@ -393,7 +393,9 @@ def export_schemas(directory, check=False):
     directory = Path(directory)
     if not check:
         directory.mkdir(parents=True, exist_ok=True)
-    for name, pair in SCHEMAS.items():
+    from .generation import GENERATE_SCHEMAS
+
+    for name, pair in (SCHEMAS | GENERATE_SCHEMAS).items():
         for suffix, schema in zip(("input", "output"), pair, strict=True):
             path = directory / f"{name}.{suffix}.json"
             encoded = (

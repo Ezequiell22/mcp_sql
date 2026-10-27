@@ -4,7 +4,7 @@ Read README.md, docs/sql-generation-mcp-spec.md and docs/sql-mcp-parser-decision
 
 ## Core boundaries
 
-- Expose only `atlas_sql_context_get` and `atlas_sql_finalize`. The host supplies the LLM. Do not add a provider, report lifecycle, frontend, business-row lookup or query execution API to this service.
+- Keep `atlas_sql_context_get` and `atlas_sql_finalize` compatible. When ATLAS_SQL_MODEL is configured, expose `atlas_sql_generate` through the small LangChain pipeline. Reuse the deterministic validator; do not add report lifecycle, frontend, business-row lookup or query execution APIs. This supersedes the original host-only model decision.
 - PostgreSQL destinations are read only. Product access uses fixed, authorized catalog queries. Never execute generated SQL, PREPARE or EXPLAIN to validate a proposal, and never install helper objects in a destination.
 - Treat model output, SQL, descriptions and request text as untrusted. Unknown syntax, dependencies, permissions, functions, types or bindings fail explicitly. Do not weaken the analyzer to accept a failing query.
 - Keep credentials outside tool arguments, source control and diagnostics. Local identity comes from the OS; shared identity comes from verified bearer claims. Recheck configured grants and database privileges during finalization.

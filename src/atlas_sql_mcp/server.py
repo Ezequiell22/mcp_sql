@@ -1,4 +1,4 @@
-"""Official MCP adapter. Exactly two tools; no execution or provider endpoint."""
+"""Official MCP adapter. Catalog validation with optional LangChain generation; no SQL execution."""
 
 import argparse
 import getpass
@@ -21,11 +21,12 @@ from .auth import JwtVerifier
 from .config import load_connections, validate_public_url
 from .contracts import SCHEMAS
 from .domain import Principal, SqlError, canonical
+from .generation import GENERATE_SCHEMAS, SqlGenerator, configured_model
 from .service import INPUT_BYTES, SqlService
 from .sqlserver_catalog import DialectCatalog
 from .worker import ProcessAnalyzer
 
-INSTRUCTIONS = """Generate one analytical SQL statement using the client's own LLM.
+INSTRUCTIONS = """For manual generation, use the client's own LLM to write one analytical SQL statement.
 Use contractVersion 1.0 for PostgreSQL and 1.1 for SQL Server. If the dialect is
 unknown, request 1.0 context first; INVALID_CONTRACT identifies the required version.
 The connection, never user text, selects the dialect. SQL Server uses sqlType,
@@ -46,9 +47,14 @@ cost or proven business equivalence. This server cannot save or run reports.
 """
 
 
-def build_server(service: SqlService, local_principal: Principal | None = None) -> Server:
+def build_server(
+    service: SqlService, local_principal: Principal | None = None, generator=None
+) -> Server:
+    schemas_by_name = {**SCHEMAS, **(GENERATE_SCHEMAS if generator is not None else {})}
+
     async def list_tools(context, params):
         descriptions = {
+            "atlas_sql_generate": "Generate validated SQL from a natural-language request using the configured model. May return clarification questions. Never executes SQL.",
             "atlas_sql_context_get": "Read authorized database catalog context for a request. No business rows or generated query are read/executed.",
             "atlas_sql_finalize": "Analyze host-written dialect-specific SQL and package its typed parameters, filters, outputs and validation evidence. Does not execute SQL.",
         }
@@ -63,10 +69,10 @@ def build_server(service: SqlService, local_principal: Principal | None = None) 
                         read_only_hint=True,
                         destructive_hint=False,
                         idempotent_hint=False,
-                        open_world_hint=False,
+                        open_world_hint=name == "atlas_sql_generate",
                     ),
                 )
-                for name, schemas in SCHEMAS.items()
+                for name, schemas in schemas_by_name.items()
             ]
         )
 
@@ -81,18 +87,28 @@ def build_server(service: SqlService, local_principal: Principal | None = None) 
                 ).envelope()
                 return _result(result)
             principal = Principal(token.claims["iss"], token.subject or token.claims["sub"])
-        result = await anyio.to_thread.run_sync(
-            service.call, params.name, params.arguments or {}, principal
-        )
+        if params.name == "atlas_sql_generate" and generator is not None:
+            result = await generator.generate(params.arguments or {}, principal)
+        else:
+            result = await anyio.to_thread.run_sync(
+                service.call, params.name, params.arguments or {}, principal
+            )
         return _result(result)
 
     return Server(
         "atlas-sql",
         version=__version__,
-        instructions=INSTRUCTIONS,
+        instructions=(
+            "Prefer atlas_sql_generate for text-to-SQL. Preserve the original request; "
+            "return clarification questions to the user. This tool calls an operator-configured "
+            "model with authorized metadata. Use the other tools for manual generation.\n"
+            if generator is not None
+            else ""
+        )
+        + INSTRUCTIONS,
         on_list_tools=list_tools,
         on_call_tool=call_tool,
-        get_tool_input_schema=lambda name: SCHEMAS.get(name, (None,))[0],
+        get_tool_input_schema=lambda name: schemas_by_name.get(name, (None,))[0],
     )
 
 
@@ -125,17 +141,21 @@ def main() -> None:
             ProcessAnalyzer(),
             timezone_name=os.environ.get("ATLAS_SQL_TIMEZONE", "UTC"),
         )
+        model = configured_model()
+        generator = SqlGenerator(service, model) if model is not None else None
         if args.transport == "stdio":
             # The OS account is the configured local identity. No identity override
             # switch and no unauthenticated local HTTP endpoint are exposed.
-            anyio.run(serve_stdio, build_server(service, Principal("local", getpass.getuser())))
+            anyio.run(
+                serve_stdio, build_server(service, Principal("local", getpass.getuser()), generator)
+            )
             return
         issuer = validate_public_url(os.environ["ATLAS_SQL_ISSUER"])
         jwks = validate_public_url(os.environ["ATLAS_SQL_JWKS_URL"])
         public_url = validate_public_url(os.environ["ATLAS_SQL_PUBLIC_URL"])
         if urlsplit(public_url).path != "/mcp":
             raise ValueError("ATLAS_SQL_PUBLIC_URL must end at /mcp.")
-        server = build_server(service)
+        server = build_server(service, generator=generator)
         app = server.streamable_http_app(
             stateless_http=True,
             json_response=True,
@@ -162,10 +182,10 @@ def main() -> None:
             access_log=False,
             proxy_headers=False,
         )
-    except (ValueError, KeyError, OSError):
+    except (ValueError, KeyError, OSError, ImportError):
         parser.exit(
             2,
-            "Invalid operator configuration. Check connection grants, secret references and HTTPS authentication settings.\n",
+            "Invalid operator configuration. Check connection grants, generation extras/model credentials and HTTPS authentication settings.\n",
         )
 
 

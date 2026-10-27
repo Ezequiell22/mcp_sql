@@ -17,10 +17,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: requirements.lock
+          cache-dependency-path: |
+            requirements.lock
+            requirements-generation.lock
       - name: Install pinned dependencies and package
         run: |
-          python -m pip install -r requirements.lock
+          python -m pip install -r requirements-generation.lock
           python -m pip install --no-deps -e .
           python -m pip install ruff==0.17.2
       - name: Source and schema consistency

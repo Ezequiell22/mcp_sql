@@ -1,5 +1,9 @@
 # Standalone SQL analyzer decision
 
+> Update: [optional LangChain generation](langchain-generation.md) supersedes the
+> original host-only/two-tool restriction when `ATLAS_SQL_MODEL` is configured.
+> Catalog-only database access and deterministic validation remain unchanged.
+
 Current extension: [experimental SQL Server support](sqlserver-support.md) adds a separate dialect adapter and contract 1.1 while preserving PostgreSQL contract 1.0. The original PostgreSQL requirements below remain the baseline; SQL Server native/ODBC certification is still open.
 Status: implemented parser choice for the standalone service; advanced release gates remain open. Date: 26 October 2026.
 

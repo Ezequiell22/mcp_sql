@@ -5,4 +5,7 @@ command = "/Users/ezequielmenegas/git/mcp-sql/.venv/bin/atlas-sql-mcp"
 args = ["--connections", "/Users/ezequielmenegas/git/mcp-sql/connections.local.json", "--transport", "stdio"]
 env_vars = ["ATLAS_SALES_DB_PASSWORD", "ATLAS_SQLSERVER_PASSWORD", "PGPASSFILE", "PGSSLROOTCERT"]
 startup_timeout_sec = 20
-tool_timeout_sec = 30
+tool_timeout_sec = 120
+
+# Optional LangChain generation: add ATLAS_SQL_MODEL and OPENAI_API_KEY to env_vars.
+# Set them in the parent environment, never put provider secrets in this file.
