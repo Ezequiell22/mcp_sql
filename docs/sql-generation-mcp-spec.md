@@ -1,5 +1,9 @@
 # Atlas SQL-generation MCP specification
 
+> [Connection strings](connection-strings.md) are now supported by `atlas_sql_connect`.
+> This supersedes the original prohibition on caller-provided credentials and
+> removes the requirement for a preconfigured connection file.
+
 > Update: [optional LangChain generation](langchain-generation.md) supersedes the
 > original host-only/two-tool restriction when `ATLAS_SQL_MODEL` is configured.
 > Catalog-only database access and deterministic validation remain unchanged.

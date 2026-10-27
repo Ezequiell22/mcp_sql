@@ -320,3 +320,143 @@ def test_database_column_privilege_revocation(postgres):
     finally:
         with psycopg.connect(**postgres["admin"], autocommit=True) as conn:
             conn.execute("GRANT SELECT ON public.orders TO atlas_reader")
+
+
+@pytest.mark.parametrize("uri", [True, False])
+def test_direct_connection_string_without_config_file(postgres, uri):
+    from psycopg.conninfo import make_conninfo
+
+    from atlas_sql_mcp.connections import SessionCatalog
+    from atlas_sql_mcp.sqlserver_catalog import DialectCatalog
+
+    config, principal = postgres["config"], postgres["principal"]
+    if uri:
+        connection_string = (
+            f"postgresql://atlas_reader:test-fixture-only@127.0.0.1:{config.port}/postgres"
+        )
+    else:
+        connection_string = make_conninfo(
+            host=config.host,
+            port=config.port,
+            dbname=config.dbname,
+            user=config.user,
+            password="test-fixture-only",
+        )
+    reader = SessionCatalog(DialectCatalog({}))
+    service = SqlService(reader, ProcessAnalyzer())
+    connected = service.call(
+        "atlas_sql_connect",
+        {"connectionString": connection_string, "schemas": ["public"]},
+        principal,
+    )
+    assert connected["status"] == "connected", connected
+    assert connected["relationCount"] == 4
+    assert "test-fixture-only" not in json.dumps(connected)
+    key = connected["connectionId"]
+    context = context_for(service, principal, connectionId=key)
+    assert context["status"] == "context", context
+    validated = service.call(
+        "atlas_sql_finalize",
+        args_for("SELECT id FROM public.orders", ["id"], context["contextId"]),
+        principal,
+    )
+    assert validated["status"] == "validated", validated
+    assert validated["artifact"]["validation"]["executionPerformed"] is False
+    assert "test-fixture-only" not in json.dumps(context) + json.dumps(validated)
+    other = service.call(
+        "atlas_sql_context_get",
+        {
+            "contractVersion": "1.0",
+            "connectionId": key,
+            "request": "Orders",
+        },
+        Principal("other", principal.subject),
+    )
+    assert other["error"]["code"] == "CONNECTION_NOT_AUTHORIZED"
+
+
+def test_direct_connection_mcp_stdio_handshake_and_workflow(postgres):
+    import asyncio
+
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    async def run():
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "atlas_sql_mcp.server"],
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools = {tool.name for tool in (await session.list_tools()).tools}
+                assert "atlas_sql_connect" in tools
+                connected = await session.call_tool(
+                    "atlas_sql_connect",
+                    {
+                        "connectionString": f"postgresql://atlas_reader:test-fixture-only@127.0.0.1:{postgres['config'].port}/postgres",
+                        "schemas": ["public"],
+                    },
+                )
+                assert not connected.is_error, connected
+                key = connected.structured_content["connectionId"]
+                context = await session.call_tool(
+                    "atlas_sql_context_get",
+                    {
+                        "contractVersion": "1.0",
+                        "connectionId": key,
+                        "request": "List order IDs",
+                    },
+                )
+                assert not context.is_error, context
+                finalized = await session.call_tool(
+                    "atlas_sql_finalize",
+                    args_for(
+                        "SELECT id FROM public.orders",
+                        ["id"],
+                        context.structured_content["contextId"],
+                    ),
+                )
+                assert not finalized.is_error, finalized
+                assert (
+                    finalized.structured_content["artifact"]["validation"]["executionPerformed"]
+                    is False
+                )
+
+    asyncio.run(run())
+
+
+def test_direct_connection_wrong_password_and_admin_are_rejected(postgres):
+    from atlas_sql_mcp.connections import SessionCatalog
+    from atlas_sql_mcp.sqlserver_catalog import DialectCatalog
+
+    reader = SessionCatalog(DialectCatalog({}))
+    service = SqlService(reader, ProcessAnalyzer())
+    port = postgres["config"].port
+    result = service.call(
+        "atlas_sql_connect",
+        {
+            "connectionString": f"postgresql://atlas_reader:incorrect-password@127.0.0.1:{port}/postgres",
+        },
+        postgres["principal"],
+    )
+    assert result["error"]["code"] == "CONNECTION_UNAVAILABLE"
+    assert "incorrect-password" not in json.dumps(result)
+    assert not reader._sessions
+    from psycopg.conninfo import make_conninfo
+
+    result = service.call(
+        "atlas_sql_connect",
+        {
+            "connectionString": make_conninfo(
+                **{
+                    key: value
+                    for key, value in postgres["admin"].items()
+                    if key != "connect_timeout"
+                }
+            ),
+        },
+        postgres["principal"],
+    )
+    assert result["error"]["code"] == "CONNECTION_POLICY_VIOLATION"
+    assert not reader._sessions

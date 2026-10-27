@@ -5,7 +5,8 @@
     "contractVersion": {
       "enum": [
         "1.0",
-        "1.1"
+        "1.1",
+        "1.2"
       ]
     },
     "contextId": {
@@ -545,6 +546,108 @@
         "properties": {
           "contractVersion": {
             "const": "1.1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "position": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "sqlType": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "nullable": {
+                  "type": "boolean"
+                },
+                "binding": {
+                  "type": "object",
+                  "properties": {
+                    "filterId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "field": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
+                  "required": [
+                    "filterId",
+                    "field"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "position",
+                "name",
+                "sqlType",
+                "nullable",
+                "binding"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 1000
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "sqlType": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "unit": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "key",
+                "label"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 1000
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "contractVersion": {
+            "const": "1.2"
           }
         }
       },

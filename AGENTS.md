@@ -4,10 +4,10 @@ Read README.md, docs/sql-generation-mcp-spec.md and docs/sql-mcp-parser-decision
 
 ## Core boundaries
 
-- Keep `atlas_sql_context_get` and `atlas_sql_finalize` compatible. When ATLAS_SQL_MODEL is configured, expose `atlas_sql_generate` through the small LangChain pipeline. Reuse the deterministic validator; do not add report lifecycle, frontend, business-row lookup or query execution APIs. This supersedes the original host-only model decision.
+- Keep `atlas_sql_context_get` and `atlas_sql_finalize` compatible. When ATLAS_SQL_MODEL is configured, expose `atlas_sql_generate` through the small LangChain pipeline. Expose `atlas_sql_connect` for user-supplied connection strings without a required configuration file. Reuse the deterministic validator; do not add report lifecycle, frontend, business-row lookup or query execution APIs. This supersedes the original host-only model decision.
 - PostgreSQL destinations are read only. Product access uses fixed, authorized catalog queries. Never execute generated SQL, PREPARE or EXPLAIN to validate a proposal, and never install helper objects in a destination.
 - Treat model output, SQL, descriptions and request text as untrusted. Unknown syntax, dependencies, permissions, functions, types or bindings fail explicitly. Do not weaken the analyzer to accept a failing query.
-- Keep credentials outside tool arguments, source control and diagnostics. Local identity comes from the OS; shared identity comes from verified bearer claims. Recheck configured grants and database privileges during finalization.
+- `atlas_sql_connect` accepts caller-provided credentials in a connectionString, bound to the authenticated principal and retained only in expiring server memory. Never echo/persist/log credentials or pass them to generation prompts. Shared deployments require explicit allowed database endpoints. Keep credentials outside source control and diagnostics. Local identity comes from the OS; shared identity comes from verified bearer claims. Recheck configured grants and database privileges during finalization.
 - Domain models/ports must remain independent of MCP and database drivers. Transport, catalog, parser and credential adapters must not depend on an external reporting application.
 - Outputs preserve SQL and exact parameter/filter contracts. Never truncate a query or silently change its business meaning. Distinguish static evidence from unproven semantics, unknown nullability and unassessed cost.
 

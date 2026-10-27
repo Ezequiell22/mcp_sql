@@ -290,8 +290,6 @@ ARTIFACT = obj(
     }
 )
 FINALIZE_SUCCESS = obj({"status": {"const": "validated"}, "artifact": ARTIFACT})
-CONTEXT_OUTPUT = {"type": "object", "oneOf": [CONTEXT_SUCCESS, ERROR]}
-FINALIZE_OUTPUT = {"type": "object", "oneOf": [FINALIZE_SUCCESS, ERROR]}
 # Contract 1.0 is unchanged for PostgreSQL. SQL Server uses 1.1 and neutral
 # sqlType/databaseMajorVersion names, never PostgreSQL-labelled T-SQL metadata.
 
@@ -364,14 +362,80 @@ MULTI_FINALIZE_INPUT["allOf"] = [
     }
     for version, variant in [("1.0", FINALIZE_INPUT), ("1.1", SQLSERVER_FINALIZE_INPUT)]
 ]
+
+
+# Version 1.2 uses the same neutral field names for every supported dialect.
+# Keep legacy schemas intact so existing consumers can migrate explicitly.
+def neutral_schema(schema):
+    if isinstance(schema, list):
+        return [neutral_schema(item) for item in schema]
+    if not isinstance(schema, dict):
+        return (
+            {
+                "postgresType": "sqlType",
+                "postgresMajorVersion": "databaseMajorVersion",
+                "postgresMajorVersions": "databaseMajorVersions",
+            }.get(schema, schema)
+            if isinstance(schema, str)
+            else schema
+        )
+    result = {}
+    for key, value in schema.items():
+        neutral_key = {
+            "postgresType": "sqlType",
+            "postgresMajorVersion": "databaseMajorVersion",
+            "postgresMajorVersions": "databaseMajorVersions",
+        }.get(key, key)
+        result[neutral_key] = (
+            {"const": "1.2"} if key == "contractVersion" else neutral_schema(value)
+        )
+    return result
+
+
+NEUTRAL_FINALIZE_INPUT = neutral_schema(FINALIZE_INPUT)
+NEUTRAL_CONTEXTS = [neutral_schema(CONTEXT_SUCCESS), neutral_schema(SQLSERVER_CONTEXT)]
+NEUTRAL_SUCCESSES = [neutral_schema(FINALIZE_SUCCESS), neutral_schema(SQLSERVER_FINALIZE_SUCCESS)]
+MULTI_CONTEXT_INPUT["properties"]["contractVersion"]["enum"].append("1.2")
+MULTI_FINALIZE_INPUT["properties"]["contractVersion"]["enum"].append("1.2")
+MULTI_FINALIZE_INPUT["allOf"].append(
+    {
+        "if": {"properties": {"contractVersion": {"const": "1.2"}}},
+        "then": {
+            "properties": {
+                "parameters": NEUTRAL_FINALIZE_INPUT["properties"]["parameters"],
+                "outputs": NEUTRAL_FINALIZE_INPUT["properties"]["outputs"],
+            }
+        },
+    }
+)
+
+
+CONNECT_INPUT = obj(
+    {"connectionString": {**string(16384), "writeOnly": True}, "schemas": array(ID, 100)},
+    ["connectionString"],
+)
+CONNECT_SUCCESS = obj(
+    {
+        "status": {"const": "connected"},
+        "connectionId": ID,
+        "dialect": {"enum": ["postgresql", "sqlserver"]},
+        "contractVersion": {"enum": ["1.0", "1.1"]},
+        "expiresAt": string(),
+        "relationCount": {"type": "integer", "minimum": 1, "maximum": 1000},
+    }
+)
 SCHEMAS = {
+    "atlas_sql_connect": (CONNECT_INPUT, {"type": "object", "oneOf": [CONNECT_SUCCESS, ERROR]}),
     "atlas_sql_context_get": (
         MULTI_CONTEXT_INPUT,
-        {"type": "object", "oneOf": [CONTEXT_SUCCESS, SQLSERVER_CONTEXT, ERROR]},
+        {"type": "object", "oneOf": [CONTEXT_SUCCESS, SQLSERVER_CONTEXT, *NEUTRAL_CONTEXTS, ERROR]},
     ),
     "atlas_sql_finalize": (
         MULTI_FINALIZE_INPUT,
-        {"type": "object", "oneOf": [FINALIZE_SUCCESS, SQLSERVER_FINALIZE_SUCCESS, ERROR]},
+        {
+            "type": "object",
+            "oneOf": [FINALIZE_SUCCESS, SQLSERVER_FINALIZE_SUCCESS, *NEUTRAL_SUCCESSES, ERROR],
+        },
     ),
 }
 
@@ -382,7 +446,15 @@ def validate(schema: dict, value: object) -> None:
     if error:
         path = ".".join(map(str, error.absolute_path))
         # jsonschema messages may echo sensitive input: do not return them.
-        raise SqlError("INVALID_CONTRACT", "Input does not match the published contract.", path)
+        message = "Input does not match the published contract."
+        if error.validator == "additionalProperties":
+            message += (
+                " Remove undeclared fields; use only properties in the published input schema."
+            )
+        elif error.validator == "required":
+            missing = sorted(set(error.validator_value) - error.instance.keys())
+            message += " Required fields: " + ", ".join(missing) + "."
+        raise SqlError("INVALID_CONTRACT", message, path)
 
 
 def export_schemas(directory, check=False):

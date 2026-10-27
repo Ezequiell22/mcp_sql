@@ -1,4 +1,4 @@
-"""Two use cases. No transport, report persistence, model calls, or business-row reads."""
+"""Connection/context/finalization use cases; no model calls or business-row reads."""
 
 import secrets
 import threading
@@ -23,7 +23,7 @@ CONTEXT_SECONDS = 600
 
 def validate_contract_version(args: dict, catalog: Catalog) -> None:
     expected = "1.1" if catalog.dialect == "sqlserver" else "1.0"
-    if args["contractVersion"] != expected:
+    if args["contractVersion"] not in {expected, "1.2"}:
         raise SqlError(
             "INVALID_CONTRACT",
             f"This connection requires contractVersion {expected}.",
@@ -90,13 +90,19 @@ class SqlService:
             if not self._admission.acquire(blocking=False):
                 raise SqlError("RATE_LIMITED", "Concurrent request limit reached.", retryable=True)
             try:
-                result = (
-                    self.context(arguments, principal)
-                    if tool == "atlas_sql_context_get"
-                    else self.finalize(arguments, principal)
-                )
+                if tool == "atlas_sql_connect":
+                    connector = getattr(self.catalog, "connect", None)
+                    if not callable(connector):
+                        raise SqlError("CONNECTION_DISABLED", "Connection strings are not enabled.")
+                    result = connector(arguments, principal)
+                elif tool == "atlas_sql_context_get":
+                    result = self.context(arguments, principal)
+                else:
+                    result = self.finalize(arguments, principal)
             finally:
                 self._admission.release()
+            if arguments.get("contractVersion") == "1.2":
+                result = self._neutral_result(result)
             validate(SCHEMAS[tool][1], result)
             # MCP returns one canonical text fallback alongside structured content.
             # Reserve extra room for envelope/JSON escaping, not just 2x raw bytes.
@@ -117,6 +123,29 @@ class SqlService:
             return SqlError(
                 "INTERNAL_VALIDATION_ERROR", "Validation did not complete; no artifact was issued."
             ).envelope()
+
+    @staticmethod
+    def _neutral_result(result: dict) -> dict:
+        result = deepcopy(result)
+        payload = result.get("artifact", result)
+        payload["contractVersion"] = "1.2"
+        for old, new in (("postgresMajorVersion", "databaseMajorVersion"),):
+            if old in payload:
+                payload[new] = payload.pop(old)
+        capabilities = payload.get("capabilities", {})
+        if "postgresMajorVersions" in capabilities:
+            capabilities["databaseMajorVersions"] = capabilities.pop("postgresMajorVersions")
+        typed = list(payload.get("parameters", [])) + list(payload.get("outputs", []))
+        for relation in payload.get("relations", []):
+            typed.extend(relation["columns"])
+        for item in typed:
+            if "postgresType" in item:
+                item["sqlType"] = item.pop("postgresType")
+        if "artifact" in result:
+            payload["artifactHash"] = digest(
+                {k: v for k, v in payload.items() if k not in {"validation", "artifactHash"}}
+            )
+        return result
 
     def _admit(self, principal: Principal) -> None:
         now = self.clock()
@@ -395,6 +424,11 @@ class SqlService:
         catalog = self._fresh(context, principal)
         type_key = "sqlType" if catalog.dialect == "sqlserver" else "postgresType"
         validate_contract_version(args, catalog)
+        if args["contractVersion"] == "1.2" and catalog.dialect == "postgresql":
+            args = deepcopy(args)
+            for item in args["parameters"] + args["outputs"]:
+                if "sqlType" in item:
+                    item["postgresType"] = item.pop("sqlType")
         analysis = self.analyzer.analyze(args["sql"], catalog)
         normalize = normalize_type
         binding_options = {}

@@ -7,6 +7,7 @@ import anyio
 
 from .contracts import (
     FINALIZE_INPUT,
+    NEUTRAL_FINALIZE_INPUT,
     SCHEMAS,
     SQLSERVER_FINALIZE_INPUT,
     array,
@@ -19,7 +20,7 @@ from .service import INPUT_BYTES
 
 GENERATE_INPUT = obj(
     {
-        "contractVersion": {"enum": ["1.0", "1.1"]},
+        "contractVersion": {"enum": ["1.0", "1.1", "1.2"]},
         "connectionId": string(128),
         "request": string(16384),
         "relations": array(string(128), 100),
@@ -40,7 +41,8 @@ Use only authorized catalog objects and supported capabilities. Do not invent
 measures, relationships, currencies or dates; ask questions when meaning is unclear.
 Use explicit schema-qualified tables and output aliases; no projection wildcards.
 Prevent aggregate duplication through joins; preaggregate when necessary.
-PostgreSQL: contract 1.0, postgresType, explicitly cast $1, $2 parameters.
+Prefer contract 1.2 for both dialects, using sqlType and databaseMajorVersion.
+Legacy PostgreSQL: contract 1.0, postgresType, explicitly cast $1, $2 parameters.
 SQL Server: contract 1.1, sqlType, CAST(@p1 AS type) parameters.
 Declare all runtime filters and bindings, output labels and semantic grain.
 Date ranges are inclusive from, exclusive until. Do not use nullable parameters.
@@ -168,7 +170,11 @@ class SqlGenerator:
             raise SqlError("CLARIFICATION_REQUIRED", "\n".join(plan["questions"]), "request")
         payload["supplementaryRefinement"] = plan["refinedRequest"]
         schema = deepcopy(
-            SQLSERVER_FINALIZE_INPUT if context["dialect"] == "sqlserver" else FINALIZE_INPUT
+            NEUTRAL_FINALIZE_INPUT
+            if context["contractVersion"] == "1.2"
+            else SQLSERVER_FINALIZE_INPUT
+            if context["dialect"] == "sqlserver"
+            else FINALIZE_INPUT
         )
         for key in ("contextId", "contractVersion"):
             del schema["properties"][key]

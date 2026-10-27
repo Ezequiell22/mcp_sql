@@ -767,6 +767,767 @@
       "type": "object",
       "properties": {
         "status": {
+          "const": "context"
+        },
+        "contractVersion": {
+          "const": "1.2"
+        },
+        "contextId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expiresAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "connectionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "dialect": {
+          "const": "postgresql"
+        },
+        "databaseMajorVersion": {
+          "const": 18
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "clock": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "metadataFingerprint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "policyVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "databaseMajorVersions": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "maxItems": 10
+            },
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "maxItems": 100
+            },
+            "unsupported": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "maxItems": 100
+            },
+            "requiredSessionSettings": {
+              "type": "object",
+              "properties": {
+                "search_path": {
+                  "const": "pg_catalog"
+                }
+              },
+              "required": [
+                "search_path"
+              ],
+              "additionalProperties": false
+            },
+            "limits": {
+              "type": "object",
+              "properties": {
+                "sqlBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "inputBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "outputBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "astNodes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "astDepth": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "contextSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "analysisSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "sqlBytes",
+                "inputBytes",
+                "outputBytes",
+                "astNodes",
+                "astDepth",
+                "contextSeconds",
+                "analysisSeconds"
+              ],
+              "additionalProperties": false
+            },
+            "businessRowsRead": {
+              "const": false
+            },
+            "queryExecutionAvailable": {
+              "const": false
+            },
+            "parameterCastsRequired": {
+              "const": true
+            },
+            "approvedFunctions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "maxItems": 200
+            }
+          },
+          "required": [
+            "databaseMajorVersions",
+            "features",
+            "unsupported",
+            "requiredSessionSettings",
+            "limits",
+            "businessRowsRead",
+            "queryExecutionAvailable",
+            "parameterCastsRequired",
+            "approvedFunctions"
+          ],
+          "additionalProperties": false
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "schema": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "kind": {
+                "const": "table"
+              },
+              "columns": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "sqlType": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "nullable": {
+                      "type": "boolean"
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 4096
+                    },
+                    "descriptionProvenance": {
+                      "const": "untrusted_database_comment"
+                    },
+                    "typeSchema": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "sqlType",
+                    "nullable",
+                    "description",
+                    "descriptionProvenance",
+                    "typeSchema"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 10000
+              },
+              "relationships": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "kind": {
+                      "enum": [
+                        "p",
+                        "u",
+                        "f"
+                      ]
+                    },
+                    "columns": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "maxItems": 1000
+                    },
+                    "targetSchema": {
+                      "type": "string"
+                    },
+                    "targetRelation": {
+                      "type": "string"
+                    },
+                    "targetColumns": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "maxItems": 1000
+                    },
+                    "validated": {
+                      "type": "boolean"
+                    },
+                    "enforced": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "kind",
+                    "columns",
+                    "targetSchema",
+                    "targetRelation",
+                    "targetColumns",
+                    "validated",
+                    "enforced"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 1000
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "descriptionProvenance": {
+                "const": "untrusted_database_comment"
+              },
+              "inheritedReadsRequireAuthorization": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "schema",
+              "name",
+              "kind",
+              "columns",
+              "relationships",
+              "description",
+              "descriptionProvenance",
+              "inheritedReadsRequireAuthorization"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 100
+        },
+        "businessDefinitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "not_configured"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 1
+        },
+        "coverage": {
+          "enum": [
+            "partial",
+            "complete"
+          ]
+        },
+        "omittedDetails": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 10
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "status",
+        "contractVersion",
+        "contextId",
+        "expiresAt",
+        "connectionId",
+        "dialect",
+        "databaseMajorVersion",
+        "timezone",
+        "clock",
+        "metadataFingerprint",
+        "policyVersion",
+        "capabilities",
+        "relations",
+        "businessDefinitions",
+        "coverage",
+        "omittedDetails",
+        "nextCursor"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "context"
+        },
+        "contractVersion": {
+          "const": "1.2"
+        },
+        "contextId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expiresAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "connectionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "dialect": {
+          "const": "sqlserver"
+        },
+        "databaseMajorVersion": {
+          "enum": [
+            16,
+            17
+          ]
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "clock": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "metadataFingerprint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "policyVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "databaseMajorVersions": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "maxItems": 10
+            },
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "maxItems": 100
+            },
+            "unsupported": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "maxItems": 100
+            },
+            "requiredSessionSettings": {
+              "type": "object",
+              "properties": {
+                "QUOTED_IDENTIFIER": {
+                  "const": "ON"
+                },
+                "ANSI_NULLS": {
+                  "const": "ON"
+                },
+                "ANSI_WARNINGS": {
+                  "const": "ON"
+                },
+                "ARITHABORT": {
+                  "const": "ON"
+                }
+              },
+              "required": [
+                "QUOTED_IDENTIFIER",
+                "ANSI_NULLS",
+                "ANSI_WARNINGS",
+                "ARITHABORT"
+              ],
+              "additionalProperties": false
+            },
+            "limits": {
+              "type": "object",
+              "properties": {
+                "sqlBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "inputBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "outputBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "astNodes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "astDepth": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "contextSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "analysisSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "sqlBytes",
+                "inputBytes",
+                "outputBytes",
+                "astNodes",
+                "astDepth",
+                "contextSeconds",
+                "analysisSeconds"
+              ],
+              "additionalProperties": false
+            },
+            "businessRowsRead": {
+              "const": false
+            },
+            "queryExecutionAvailable": {
+              "const": false
+            },
+            "parameterCastsRequired": {
+              "const": true
+            },
+            "approvedFunctions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "maxItems": 200
+            }
+          },
+          "required": [
+            "databaseMajorVersions",
+            "features",
+            "unsupported",
+            "requiredSessionSettings",
+            "limits",
+            "businessRowsRead",
+            "queryExecutionAvailable",
+            "parameterCastsRequired",
+            "approvedFunctions"
+          ],
+          "additionalProperties": false
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "schema": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "kind": {
+                "const": "table"
+              },
+              "columns": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "sqlType": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "nullable": {
+                      "type": "boolean"
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 4096
+                    },
+                    "descriptionProvenance": {
+                      "const": "untrusted_database_comment"
+                    },
+                    "typeSchema": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "sqlType",
+                    "nullable",
+                    "description",
+                    "descriptionProvenance",
+                    "typeSchema"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 10000
+              },
+              "relationships": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "kind": {
+                      "enum": [
+                        "p",
+                        "u",
+                        "f"
+                      ]
+                    },
+                    "columns": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "maxItems": 1000
+                    },
+                    "targetSchema": {
+                      "type": "string"
+                    },
+                    "targetRelation": {
+                      "type": "string"
+                    },
+                    "targetColumns": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "maxItems": 1000
+                    },
+                    "validated": {
+                      "type": "boolean"
+                    },
+                    "enforced": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "kind",
+                    "columns",
+                    "targetSchema",
+                    "targetRelation",
+                    "targetColumns",
+                    "validated",
+                    "enforced"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 1000
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "descriptionProvenance": {
+                "const": "untrusted_database_comment"
+              },
+              "inheritedReadsRequireAuthorization": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "schema",
+              "name",
+              "kind",
+              "columns",
+              "relationships",
+              "description",
+              "descriptionProvenance",
+              "inheritedReadsRequireAuthorization"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 100
+        },
+        "businessDefinitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "not_configured"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 1
+        },
+        "coverage": {
+          "enum": [
+            "partial",
+            "complete"
+          ]
+        },
+        "omittedDetails": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 10
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "status",
+        "contractVersion",
+        "contextId",
+        "expiresAt",
+        "connectionId",
+        "dialect",
+        "databaseMajorVersion",
+        "timezone",
+        "clock",
+        "metadataFingerprint",
+        "policyVersion",
+        "capabilities",
+        "relations",
+        "businessDefinitions",
+        "coverage",
+        "omittedDetails",
+        "nextCursor"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": {
           "const": "error"
         },
         "error": {

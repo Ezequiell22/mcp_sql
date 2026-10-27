@@ -18,7 +18,7 @@ For Claude Code, load the file directly for a session:
 claude --mcp-config /Users/ezequielmenegas/git/mcp-sql/configs/claude-code.json
 ```
 
-After saving persistent configuration, restart the client or reload its MCP server list. Expect exactly `atlas_sql_context_get` and `atlas_sql_finalize`. The client may ask you to trust the server/project.
+After saving persistent configuration, restart the client or reload its MCP server list. Expect `atlas_sql_connect`, `atlas_sql_context_get` and `atlas_sql_finalize`, plus `atlas_sql_generate` when a model is configured. The client may ask you to trust the server/project.
 
 Formats and locations were checked against the official [Codex MCP documentation](https://developers.openai.com/codex/mcp), [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp), and [Cursor MCP documentation](https://cursor.com/docs/mcp).
 
@@ -36,3 +36,7 @@ Before requesting database context:
 The PostgreSQL connection ID is `sales-readonly` and uses `contractVersion: "1.0"`. The SQL Server connection ID is `sales-sqlserver` and uses `contractVersion: "1.1"`. One MCP registration serves both connections. The database adapter is selected by the operator configuration.
 
 A successful startup/tool-list check does not test database connectivity. The placeholder destinations cannot supply metadata until you replace them. This MCP constructs and validates SQL; it does not run generated queries.
+
+You can also provide a [connection string](../docs/connection-strings.md) through
+`atlas_sql_connect`, without editing the private connection file. Start the server
+without `--connections` if you only need caller-provided connections.

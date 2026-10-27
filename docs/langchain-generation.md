@@ -1,7 +1,8 @@
 # LangChain generation
 
 The original host-only decision is superseded by optional server-side generation.
-Without `ATLAS_SQL_MODEL`, the two existing tools and dependencies remain compatible.
+Without `ATLAS_SQL_MODEL`, no provider is loaded. The existing context/finalization
+tools remain compatible; [connection strings](connection-strings.md) are also supported.
 With it, `atlas_sql_generate` accepts the original request and returns the same
 validated artifact as `atlas_sql_finalize`, or a structured error.
 

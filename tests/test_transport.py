@@ -83,8 +83,11 @@ def test_unsigned_token_rejected(signing_key):
     assert asyncio.run(verifier(signing_key).verify_token(unsigned)) is None
 
 
+@pytest.mark.parametrize("contract_version", ["1.0", "1.2"])
 @pytest.mark.parametrize("with_generation", [False, True])
-def test_shared_http_complete_flow_and_authentication(service, signing_key, with_generation):
+def test_shared_http_complete_flow_and_authentication(
+    service, signing_key, with_generation, contract_version
+):
     async def run():
         generator = None
         if with_generation:
@@ -141,7 +144,7 @@ def test_shared_http_complete_flow_and_authentication(service, signing_key, with
                         ctx = await session.call_tool(
                             "atlas_sql_context_get",
                             {
-                                "contractVersion": "1.0",
+                                "contractVersion": contract_version,
                                 "connectionId": "sales",
                                 "request": "Orders",
                             },
@@ -150,7 +153,10 @@ def test_shared_http_complete_flow_and_authentication(service, signing_key, with
                         ctx_id = ctx.structured_content["contextId"]
                         result = await session.call_tool(
                             "atlas_sql_finalize",
-                            args_for("SELECT id FROM public.orders", ["id"], ctx_id),
+                            {
+                                **args_for("SELECT id FROM public.orders", ["id"], ctx_id),
+                                "contractVersion": contract_version,
+                            },
                         )
                         assert not result.is_error, result
                         assert (
@@ -163,7 +169,7 @@ def test_shared_http_complete_flow_and_authentication(service, signing_key, with
                             generated = await session.call_tool(
                                 "atlas_sql_generate",
                                 {
-                                    "contractVersion": "1.0",
+                                    "contractVersion": contract_version,
                                     "connectionId": "sales",
                                     "request": "List order IDs",
                                 },
@@ -175,7 +181,10 @@ def test_shared_http_complete_flow_and_authentication(service, signing_key, with
                         )
                         forbidden = await session.call_tool(
                             "atlas_sql_finalize",
-                            args_for("SELECT id FROM public.orders", ["id"], ctx_id),
+                            {
+                                **args_for("SELECT id FROM public.orders", ["id"], ctx_id),
+                                "contractVersion": contract_version,
+                            },
                         )
                         assert forbidden.is_error
                         assert forbidden.structured_content["error"]["code"] == "CONTEXT_EXPIRED"
@@ -214,7 +223,11 @@ def test_stdio_real_process_registers_only_generation_tools(tmp_path):
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                assert len((await session.list_tools()).tools) == 2
+                assert {tool.name for tool in (await session.list_tools()).tools} == {
+                    "atlas_sql_connect",
+                    "atlas_sql_context_get",
+                    "atlas_sql_finalize",
+                }
                 result = await session.call_tool(
                     "atlas_sql_context_get",
                     {"contractVersion": "1.0", "connectionId": "unconfigured", "request": "Orders"},

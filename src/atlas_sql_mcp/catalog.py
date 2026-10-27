@@ -13,6 +13,7 @@ from .domain import Catalog, Column, Constraint, Principal, Relation, SqlError
 
 # Names are values, never interpolated SQL. Constraints are disclosed only when all
 # participating columns and the referenced relation are authorized.
+IDENTITY_SQL = "SELECT current_setting('server_version_num')::integer, rolsuper, rolbypassrls FROM pg_catalog.pg_roles WHERE rolname=current_user"
 RELATION_SQL = """
 SELECT c.oid, c.relkind, pg_catalog.obj_description(c.oid, 'pg_class'),
        pg_catalog.has_table_privilege(c.oid, 'SELECT')
@@ -90,9 +91,7 @@ class PostgresCatalog:
                 conn.read_only = True
                 conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
                 with metadata_deadline(conn), conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT current_setting('server_version_num')::integer, rolsuper, rolbypassrls FROM pg_catalog.pg_roles WHERE rolname=current_user"
-                    )
+                    cur.execute(IDENTITY_SQL)
                     version, superuser, bypass = cur.fetchone()
                     if superuser or bypass:
                         raise SqlError(

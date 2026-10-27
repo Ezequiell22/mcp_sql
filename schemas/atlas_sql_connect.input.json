@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "connectionString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384,
+      "writeOnly": true
+    },
+    "schemas": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "maxItems": 100
+    }
+  },
+  "required": [
+    "connectionString"
+  ],
+  "additionalProperties": false
+}

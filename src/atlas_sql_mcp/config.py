@@ -1,9 +1,9 @@
-"""Operator-only connection configuration. No secrets in model-visible inputs."""
+"""Operator configuration and private in-memory connection credentials."""
 
 import ipaddress
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -21,6 +21,7 @@ class Connection:
     sslmode: str
     grants: dict[str, dict[str, tuple[str, ...]]]
     dialect: str = "postgresql"
+    password: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def policy_version(self) -> str:
@@ -46,7 +47,11 @@ class Connection:
         return grants
 
     def connect_kwargs(self) -> dict:
-        password = os.environ.get(self.password_env) if self.password_env else None
+        password = (
+            self.password
+            if self.password is not None
+            else (os.environ.get(self.password_env) if self.password_env else None)
+        )
         if self.password_env and not password:
             raise SqlError(
                 "CONNECTION_UNAVAILABLE", "Configured credential is unavailable.", retryable=True

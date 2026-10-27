@@ -57,7 +57,9 @@ WHERE f.parent_object_id=? ORDER BY f.object_id, k.constraint_column_id
 
 def odbc_string(config: Connection) -> str:
     """Brace every value, including credentials, to prevent ODBC option injection."""
-    password = os.environ.get(config.password_env)
+    password = (
+        config.password if config.password is not None else os.environ.get(config.password_env)
+    )
     if not password:
         raise SqlError("CONNECTION_UNAVAILABLE", "Configured credential is unavailable.")
 
@@ -287,12 +289,16 @@ class SqlServerCatalog:
 class DialectCatalog:
     """Reload policy on each call; choose an adapter from operator configuration."""
 
-    def __init__(self, connections: Path):
+    def __init__(self, connections: Path | dict):
         self.connections = connections
 
     def load(self, principal: Principal, connection_id: str) -> Catalog:
         try:
-            configs = load_connections(self.connections)
+            configs = (
+                load_connections(self.connections)
+                if isinstance(self.connections, Path)
+                else self.connections
+            )
         except (ValueError, OSError):
             raise SqlError(
                 "CONNECTION_POLICY_UNAVAILABLE", "Connection policy could not be loaded."

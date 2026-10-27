@@ -1,8 +1,17 @@
 # MCP SQL — Atlas
 
-Standalone PostgreSQL and SQL Server SQL-generation support for the LLM in Codex, Claude, or another MCP host. It reads authorized database catalog metadata and validates host-written SQL. It returns the original SQL, typed parameters, filters, result metadata, lineage, assumptions, and validation evidence. It preserves two catalog/validation tools and optionally exposes `atlas_sql_generate` through a small LangChain pipeline. It has no report lifecycle, query execution, or dependency on the Java reporting service.
+Standalone PostgreSQL and SQL Server SQL-generation support for the LLM in Codex, Claude, or another MCP host. It reads authorized database catalog metadata and validates host-written SQL. It returns the original SQL, typed parameters, filters, result metadata, lineage, assumptions, and validation evidence. It accepts database connection strings through `atlas_sql_connect`, preserves the catalog/validation tools, and optionally exposes `atlas_sql_generate` through a small LangChain pipeline. It has no report lifecycle, query execution, or dependency on the Java reporting service.
 
 This repository contains only the SQL-generation core. Reporting applications, web interfaces, persistence and query execution are separate consumers, with their own authorization and execution policies. The [target specification](docs/sql-generation-mcp-spec.md) includes broader acceptance gates; see the implementation limits below before treating the package as a complete PostgreSQL server analyzer.
+
+## Connect with a connection string
+
+Start `.venv/bin/atlas-sql-mcp` and call `atlas_sql_connect` with a PostgreSQL URI
+or `host=... port=... dbname=... user=... password=...` string. The server tests the
+connection and returns an expiring, user-bound `connectionId`; no configuration
+file is required. SQL Server URIs are also supported. See [formats, credentials,
+permissions and shared-server limits](docs/connection-strings.md) and the
+[tool example](examples/connect.json).
 
 ## LangChain: text to validated SQL
 
@@ -16,7 +25,7 @@ See [setup, prompts, limits and verification](docs/langchain-generation.md).
 
 PostgreSQL 18 retains contract 1.0. A separate **experimental SQL Server adapter** targets major versions 16/17 using contract 1.1, native T-SQL type declarations and `CAST(@p1 AS type)` parameters. It has isolated static analysis, fixed catalog queries, per-column permission checks and verified TLS. Its accepted subset includes joins, CTEs, aggregation, CASE/COALESCE and ranking. Unsupported syntax/types fail explicitly. It has not yet passed native SQL Server/ODBC certification; artifacts state `passed_static_subset` rather than claiming server-native syntax verification.
 
-See [SQL Server setup, capabilities, bounded host repair workflow and release gates](docs/sqlserver-support.md), [connection configuration](examples/connections-sqlserver.json), and [finalization example](examples/finalize-sqlserver.json). The host generates one complete SQL statement and may repair structured errors for up to three attempts. Without optional generation configured, the MCP exposes the original two tools and makes no model calls. An agent loop cannot by itself prove business correctness or an efficient query plan.
+See [SQL Server setup, capabilities, bounded host repair workflow and release gates](docs/sqlserver-support.md), [connection configuration](examples/connections-sqlserver.json), and [finalization example](examples/finalize-sqlserver.json). The host generates one complete SQL statement and may repair structured errors for up to three attempts. Without optional generation configured, the MCP exposes connection, context and finalization tools and makes no model calls. An agent loop cannot by itself prove business correctness or an efficient query plan.
 
 Run `.venv/bin/python scripts/verify.py` for Python syntax, local documentation links, schema consistency and isolated tests. The offline `atlas-sql-check --dialect sqlserver query.sql` diagnostic checks syntax only and never issues an artifact. SQL Server dependencies are optional and pinned in [requirements-sqlserver.lock](requirements-sqlserver.lock).
 
@@ -78,9 +87,16 @@ Set `ATLAS_SQL_JWKS_URL` to the trusted issuer's HTTPS JWKS endpoint. Configure 
 
 `ATLAS_SQL_PUBLIC_URL` must be an HTTPS URL ending in `/mcp`. Its authority is the allowed Host; supplied browser Origins are rejected. The trusted ingress must preserve that Host, terminate TLS, restrict backend reachability, and enforce request/read timeouts. OAuth protected-resource metadata is served at `/.well-known/oauth-protected-resource/mcp`. Configure public client registration/PKCE at the issuer; the service does not provision identity-provider clients. JWKS metadata is cached for up to five minutes; token expiry/signature/audience/issuer and scope checks apply on every request.
 
-Only `ATLAS_SQL_TIMEZONE` is optional (default `UTC`, valid IANA timezone). SQL must use explicit date/timezone decisions; this setting does not rewrite SQL. Shared transport has automated SDK tests with signed tokens; real hosted-client onboarding, ingress deployment, and issuer integration remain acceptance work for the chosen environment.
+`ATLAS_SQL_TIMEZONE` is optional (default `UTC`, valid IANA timezone). SQL must use explicit date/timezone decisions; this setting does not rewrite SQL. Shared transport has automated SDK tests with signed tokens; real hosted-client onboarding, ingress deployment, and issuer integration remain acceptance work for the chosen environment.
 
 ## Tools and portable contract
+
+Prefer **contract 1.2** for both supported dialects: `sqlType`,
+`databaseMajorVersion`, and `databaseMajorVersions` are database-neutral.
+Legacy 1.0/1.1 remain compatible. See the [migration and exact input fields](docs/neutral-contract.md).
+
+`atlas_sql_connect` accepts a connection string and returns `connectionId`, dialect,
+contract version and expiry. Existing configured connection IDs remain supported.
 
 1. `atlas_sql_context_get`: `contractVersion: "1.0"`, `connectionId`, and natural-language `request`; optional focused search, relation list, included details, and page size. Returns an opaque ten-minute handle, authorized catalog, constraints, capabilities, metadata/policy fingerprints, clock/timezone, coverage, and a cursor. Follow-up calls retain request, connection, context, and exact focus/page size when following a cursor.
 2. `atlas_sql_finalize`: `contextId`, host-written `sql`, `parameters`, `filters`, `outputs`, and `semantics`. Rechecks identity, schema, policy, syntax, nested dependencies, supported types, join grain risks, binding and output contracts, and freshness again after analysis. Returns a portable artifact or a safe structured error. It cannot infer every unresolved business choice; the host asks the user before calling it.
@@ -110,6 +126,6 @@ Limits: 256 KiB SQL, 512 KiB complete input, 1 MiB complete encoded MCP result i
 
 ## Evidence and remaining release gates
 
-Verification recorded on 26 October 2026: **401 automated checks passed**, including 87 checks against a newly created disposable PostgreSQL 18 fixture. The large-query case contains **1,462 lines / 57,571 UTF-8 bytes** and matches an independent reference query. The fixed-width currency-code regression is included. The package also builds as a wheel and its isolated parser runs from a fresh installation outside the repository. Source lint/format, exported-schema consistency, documentation links, and whitespace checks pass. Six optional native SQL Server checks were skipped; the SQL Server ODBC/TLS and engine release gates remain open. These are local conformance results, not the target's client/model or load-test measurements.
+Verification recorded on 26 October 2026: **466 automated checks passed**, including 91 checks against a newly created disposable PostgreSQL 18 fixture. The large-query case contains **1,462 lines / 57,571 UTF-8 bytes** and matches an independent reference query. The fixed-width currency-code regression is included. The package also builds as a wheel and its isolated parser runs from a fresh installation outside the repository. Source lint/format, exported-schema consistency, documentation links, and whitespace checks pass. Six optional native SQL Server checks were skipped; the SQL Server ODBC/TLS and engine release gates remain open. These are local conformance results, not the target's client/model or load-test measurements.
 
 Automated tests cover native/scoped analysis, independent PostgreSQL output types, selected business-result reconciliation, large-query integrity, output schemas, filter failures, authorization drift, cross-user contexts, real stdio subprocess calls, shared HTTP SDK calls, and signed-token failures. They do not establish real Codex/Claude model orchestration quality, a ten-user performance percentile, all PostgreSQL overload semantics, attested views, or report-consumer migration. Those target-spec gates remain open. Keep the existing reporting registration separate until its consumer explicitly supports an artifact's query features.
