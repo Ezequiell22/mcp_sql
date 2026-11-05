@@ -1,0 +1,6 @@
+# Uses the persistent local container created by docs/docker.md.
+[mcp_servers.atlas_sql]
+command = "docker"
+args = ["exec", "-i", "atlas-sql-mcp", "atlas-sql-mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120

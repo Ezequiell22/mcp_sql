@@ -2,9 +2,9 @@ from copy import deepcopy
 
 import pytest
 
-from atlas_sql_mcp.analyzer import PostgresAnalyzer
+from atlas_sql_mcp.analysis.postgres import PostgresAnalyzer
+from atlas_sql_mcp.application.service import SqlService
 from atlas_sql_mcp.domain import Catalog, Column, Constraint, Principal, Relation
-from atlas_sql_mcp.service import SqlService
 
 
 @pytest.fixture

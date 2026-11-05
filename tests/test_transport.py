@@ -14,9 +14,10 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
+from test_connections import session_reader as session_reader
 
-from atlas_sql_mcp.auth import JwtVerifier
-from atlas_sql_mcp.server import build_server
+from atlas_sql_mcp.transport.auth import JwtVerifier
+from atlas_sql_mcp.transport.server import build_http_app, build_server, catalog_lifecycle
 
 ISSUER = "https://identity.example.test"
 RESOURCE = "https://sql.example.test/mcp"
@@ -56,6 +57,7 @@ def verifier(key):
         {"exp": 1},
         {"sub": ""},
         {"scope": ["atlas:sql"]},
+        {"exp": float("inf")},
     ],
 )
 def test_invalid_signed_tokens(signing_key, changes):
@@ -84,19 +86,9 @@ def test_unsigned_token_rejected(signing_key):
 
 
 @pytest.mark.parametrize("contract_version", ["1.0", "1.2"])
-@pytest.mark.parametrize("with_generation", [False, True])
-def test_shared_http_complete_flow_and_authentication(
-    service, signing_key, with_generation, contract_version
-):
+def test_shared_http_complete_flow_and_authentication(service, signing_key, contract_version):
     async def run():
-        generator = None
-        if with_generation:
-            from test_generation import PLAN, Model, proposal
-
-            from atlas_sql_mcp.generation import SqlGenerator
-
-            generator = SqlGenerator(service, Model(PLAN, proposal()))
-        server = build_server(service, generator=generator)
+        server = build_server(service)
         app = server.streamable_http_app(
             stateless_http=True,
             json_response=True,
@@ -136,7 +128,7 @@ def test_shared_http_complete_flow_and_authentication(
                         assert {t.name for t in tools} == {
                             "atlas_sql_context_get",
                             "atlas_sql_finalize",
-                        } | ({"atlas_sql_generate"} if with_generation else set())
+                        }
                         assert all(
                             t.input_schema["additionalProperties"] is False and t.output_schema
                             for t in tools
@@ -165,17 +157,6 @@ def test_shared_http_complete_flow_and_authentication(
                             ]
                             is False
                         )
-                        if with_generation:
-                            generated = await session.call_tool(
-                                "atlas_sql_generate",
-                                {
-                                    "contractVersion": contract_version,
-                                    "connectionId": "sales",
-                                    "request": "List order IDs",
-                                },
-                            )
-                            assert not generated.is_error, generated
-                            assert generated.structured_content["status"] == "validated"
                         client.headers["Authorization"] = "Bearer " + token(
                             signing_key, sub="another-user"
                         )
@@ -192,7 +173,80 @@ def test_shared_http_complete_flow_and_authentication(
     asyncio.run(run())
 
 
-def test_stdio_real_process_registers_only_generation_tools(tmp_path):
+@pytest.mark.parametrize("public_url", [RESOURCE, "https://SQL.EXAMPLE.TEST:443/mcp"])
+def test_runtime_http_health_auth_host_and_origin_policy(
+    service, signing_key, monkeypatch, public_url
+):
+    from atlas_sql_mcp.transport import server as transport
+
+    monkeypatch.setenv("ATLAS_SQL_ISSUER", ISSUER)
+    monkeypatch.setenv("ATLAS_SQL_JWKS_URL", ISSUER + "/jwks")
+    monkeypatch.setenv("ATLAS_SQL_PUBLIC_URL", public_url)
+
+    def configured_verifier(issuer, jwks, resource):
+        assert resource == RESOURCE
+        return verifier(signing_key)
+
+    monkeypatch.setattr(transport, "JwtVerifier", configured_verifier)
+
+    async def run():
+        app = build_http_app(service)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="https://sql.example.test"
+            ) as client:
+                health = await client.get("/healthz")
+                assert health.status_code == 200 and health.text == "ok\n"
+                assert health.headers["cache-control"] == "no-store"
+                assert (await client.post("/mcp", json={})).status_code == 401
+                metadata = await client.get("/.well-known/oauth-protected-resource/mcp")
+                assert metadata.json()["resource"] == RESOURCE
+                auth = {"Authorization": "Bearer " + token(signing_key)}
+                client.headers.update(auth)
+                async with streamable_http_client(RESOURCE, http_client=client) as streams:
+                    async with ClientSession(streams[0], streams[1]) as session:
+                        await session.initialize()
+                for headers in [
+                    {**auth, "Host": "untrusted.example.test"},
+                    {**auth, "Origin": "https://untrusted.example.test"},
+                ]:
+                    assert (await client.post("/mcp", json={}, headers=headers)).status_code in {
+                        400,
+                        403,
+                        421,
+                    }
+
+    asyncio.run(run())
+
+
+def test_idle_expired_credentials_are_reaped_and_shutdown_clears_sessions(
+    session_reader, principal
+):
+    from test_connections import URI
+
+    reader, _ = session_reader
+    now = [1000]
+    reader.clock = lambda: now[0]
+
+    async def run():
+        async with catalog_lifecycle(reader, cleanup_interval=0.001):
+            reader.connect({"connectionString": URI}, principal)
+            now[0] += 3601
+            # No catalog call triggers lazy cleanup; the transport owns the reaper.
+            for _ in range(100):
+                if not reader._sessions:
+                    break
+                await asyncio.sleep(0.001)
+            assert not reader._sessions
+            reader.connect({"connectionString": URI}, principal)
+            assert reader._sessions
+        assert not reader._sessions
+        assert reader._closed
+
+    asyncio.run(run())
+
+
+def test_stdio_real_process_registers_only_agent_tools(tmp_path):
     import json
 
     config = tmp_path / "connections.json"
@@ -218,16 +272,20 @@ def test_stdio_real_process_registers_only_generation_tools(tmp_path):
     async def run():
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "atlas_sql_mcp.server", "--connections", str(config)],
+            args=["-m", "atlas_sql_mcp.transport.server", "--connections", str(config)],
+            env={"ATLAS_SQL_MODEL": "unsupported:must-not-load", "OPENAI_API_KEY": "unused"},
         )
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
-                await session.initialize()
+                initialized = await session.initialize()
+                assert "connected agent is the only LLM" in initialized.instructions
                 assert {tool.name for tool in (await session.list_tools()).tools} == {
                     "atlas_sql_connect",
                     "atlas_sql_context_get",
                     "atlas_sql_finalize",
                 }
+                removed = await session.call_tool("atlas_sql_generate", {})
+                assert removed.is_error
                 result = await session.call_tool(
                     "atlas_sql_context_get",
                     {"contractVersion": "1.0", "connectionId": "unconfigured", "request": "Orders"},

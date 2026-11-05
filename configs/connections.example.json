@@ -3,14 +3,14 @@
     {
       "id": "sales-readonly",
       "dialect": "postgresql",
-      "host": "REPLACE_WITH_POSTGRES_HOST",
+      "host": "postgres.example.test",
       "port": 5432,
       "dbname": "REPLACE_WITH_DATABASE_NAME",
       "user": "REPLACE_WITH_READONLY_DATABASE_USER",
       "passwordEnv": "ATLAS_SALES_DB_PASSWORD",
       "sslmode": "verify-full",
       "grants": {
-        "local#ezequielmenegas": {
+        "local#REPLACE_WITH_OS_USERNAME": {
           "public.orders": [
             "id",
             "ordered_on",
@@ -22,14 +22,14 @@
     {
       "id": "sales-sqlserver",
       "dialect": "sqlserver",
-      "host": "REPLACE_WITH_SQLSERVER_HOST",
+      "host": "sqlserver.example.test",
       "port": 1433,
       "dbname": "REPLACE_WITH_DATABASE_NAME",
       "user": "REPLACE_WITH_READONLY_DATABASE_USER",
       "passwordEnv": "ATLAS_SQLSERVER_PASSWORD",
       "sslmode": "verify-full",
       "grants": {
-        "local#ezequielmenegas": {
+        "local#REPLACE_WITH_OS_USERNAME": {
           "dbo.orders": [
             "id",
             "ordered_on",

@@ -4,7 +4,9 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from .domain import SqlError
+from atlas_sql_mcp.domain import SqlError
+
+METADATA_SECONDS = 5
 
 _deadline: ContextVar[float | None] = ContextVar("atlas_sql_deadline", default=None)
 

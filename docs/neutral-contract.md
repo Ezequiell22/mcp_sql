@@ -1,7 +1,7 @@
 # Database-neutral contract 1.2
 
-Use `contractVersion: "1.2"` with `atlas_sql_context_get`, `atlas_sql_finalize`
-and optional `atlas_sql_generate` for either supported database dialect.
+Use `contractVersion: "1.2"` with `atlas_sql_context_get` and `atlas_sql_finalize`
+for either supported database dialect.
 Use the connection ID returned by `atlas_sql_connect` or an authorized configured ID;
 connection names, schemas, tables and business models are never fixed by this contract.
 
@@ -27,12 +27,9 @@ Generated SQL remains read only and is never executed by the MCP.
 
 ## Verification
 
-On 26 October 2026, `ALLOW_SYNTHETIC_DB_WRITES=1 .venv/bin/python scripts/verify.py`
-passed 466 checks, including 91 using a new disposable PostgreSQL 18 database; six
-optional native SQL Server checks were skipped. Exported schemas, documentation
-links, Python syntax, lint, formatting and whitespace checks passed. Regressions
-cover neutral PostgreSQL and SQL Server metadata, parameter/type checking, artifact
-hashes, SQL preservation, arbitrary catalog names, monthly sales aggregation, and
-MCP HTTP authentication/generation with legacy and neutral contracts. This does
-not certify native SQL Server or a live hosted model. Reload existing MCP clients
-to discover the updated tools and schemas.
+Regression coverage includes neutral PostgreSQL and SQL Server metadata,
+parameter/type checking, artifact hashes, SQL preservation, arbitrary catalog names,
+aggregation and authenticated agent-driven MCP validation with legacy and neutral contracts.
+See [current test evidence and reproduction](testing.md); older test counts do not
+represent the current checkout. Reload existing MCP clients after an upgrade to
+rediscover tool schemas.

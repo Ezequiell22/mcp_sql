@@ -2,10 +2,8 @@
   "mcpServers": {
     "atlas_sql": {
       "type": "stdio",
-      "command": "/Users/ezequielmenegas/git/mcp-sql/.venv/bin/atlas-sql-mcp",
+      "command": "/absolute/path/mcp-sql/.venv/bin/atlas-sql-mcp",
       "args": [
-        "--connections",
-        "/Users/ezequielmenegas/git/mcp-sql/connections.local.json",
         "--transport",
         "stdio"
       ]

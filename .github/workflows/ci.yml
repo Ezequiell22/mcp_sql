@@ -19,17 +19,13 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements.lock
-            requirements-generation.lock
+            requirements-dev.lock
       - name: Install pinned dependencies and package
         run: |
-          python -m pip install -r requirements-generation.lock
+          python -m pip install -r requirements-dev.lock
           python -m pip install --no-deps -e .
-          python -m pip install ruff==0.17.2
       - name: Source and schema consistency
         run: |
-          ruff check src tests scripts
-          ruff format --check src tests scripts
-          python -m atlas_sql_mcp.contracts schemas --check
           python scripts/verify.py --checks-only
           git diff --check
       - name: Prepare disposable integration image
@@ -40,3 +36,36 @@ jobs:
         run: python -m pytest
       - name: Build independent package
         run: python -m pip wheel --no-deps . --wheel-dir dist
+  docker-sqlserver:
+    # Repository owner enables this only after accepting Microsoft's driver/server EULAs.
+    if: vars.ACCEPT_SQLSERVER_EULA == 'Y'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        sqlserver: ['2022-latest', '2025-latest']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install test harness
+        run: |
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps -e .
+      - name: Build real dual-database runtime
+        run: docker build --build-arg ACCEPT_EULA=Y -t atlas-sql-mcp:ci .
+      - name: Prepare isolated database images
+        run: |
+          docker pull postgres:18
+          docker pull mcr.microsoft.com/mssql/server:${{ matrix.sqlserver }}
+      - name: Agent workflows and verified TLS from Docker
+        env:
+          ALLOW_SYNTHETIC_DB_WRITES: '1'
+          ACCEPT_SQLSERVER_EULA: 'Y'
+          ATLAS_SQL_DOCKER_IMAGE: atlas-sql-mcp:ci
+          ATLAS_SQL_SQLSERVER_IMAGE: mcr.microsoft.com/mssql/server:${{ matrix.sqlserver }}
+        run: python scripts/verify.py --integration

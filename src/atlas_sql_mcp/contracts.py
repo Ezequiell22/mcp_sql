@@ -4,7 +4,7 @@ from copy import deepcopy
 
 from jsonschema import Draft202012Validator
 
-from .domain import SqlError
+from atlas_sql_mcp.domain import SqlError
 
 
 def obj(properties: dict, required: list[str] | None = None) -> dict:
@@ -421,7 +421,7 @@ CONNECT_SUCCESS = obj(
         "dialect": {"enum": ["postgresql", "sqlserver"]},
         "contractVersion": {"enum": ["1.0", "1.1"]},
         "expiresAt": string(),
-        "relationCount": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "relationCount": {"type": "integer", "minimum": 1},
     }
 )
 SCHEMAS = {
@@ -465,9 +465,7 @@ def export_schemas(directory, check=False):
     directory = Path(directory)
     if not check:
         directory.mkdir(parents=True, exist_ok=True)
-    from .generation import GENERATE_SCHEMAS
-
-    for name, pair in (SCHEMAS | GENERATE_SCHEMAS).items():
+    for name, pair in SCHEMAS.items():
         for suffix, schema in zip(("input", "output"), pair, strict=True):
             path = directory / f"{name}.{suffix}.json"
             encoded = (

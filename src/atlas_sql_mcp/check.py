@@ -7,8 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .analyzer import MAX_DEPTH, MAX_NODES, MAX_SQL_BYTES
-from .domain import SqlError
+from atlas_sql_mcp.analysis.limits import MAX_DEPTH, MAX_NODES, MAX_SQL_BYTES
+from atlas_sql_mcp.domain import SqlError
 
 
 def parse_only(sql: str, dialect: str) -> dict:

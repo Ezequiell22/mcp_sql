@@ -1,0 +1,15 @@
+# Combine with the repository root compose.yaml; keep lab credentials separate.
+services:
+  mcp:
+    environment:
+      SSL_CERT_FILE: /lab-ca/server.crt
+      PGSSLROOTCERT: /lab-ca/server.crt
+    volumes:
+      - ${LAB_DIR:?}/tls/server.crt:/lab-ca/server.crt:ro
+    networks:
+      - default
+      - erp-lab
+networks:
+  erp-lab:
+    external: true
+    name: atlas-erp-lab_default

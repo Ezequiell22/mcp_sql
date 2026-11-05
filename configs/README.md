@@ -1,42 +1,49 @@
-# Import Atlas SQL into your MCP client
+# Register the MCP once
 
-These files are configured for the local checkout at `/Users/ezequielmenegas/git/mcp-sql`. They launch `.venv/bin/atlas-sql-mcp` over stdio using the private `connections.local.json` file in the repository root. If you move the checkout, update `command` and the connections path in all three files.
+These templates start the installed MCP over stdio. Replace `/absolute/path/mcp-sql`
+with the installation directory. No connection file, table list, business catalog,
+or model API key is required for this workflow: the chat assistant writes
+SQL using metadata discovered from the connection string.
 
-## Choose your client
+| Client | Template |
+| --- | --- |
+| Codex with local Python | [codex.toml](codex.toml) |
+| Codex with Docker | [codex-docker.toml](codex-docker.toml) |
+| Claude Code | [claude-code.json](claude-code.json) |
+| Cursor | [cursor.json](cursor.json) |
 
-| Client | Prepared file | Installation |
-| --- | --- | --- |
-| Codex | [codex.toml](codex.toml) | Merge its `[mcp_servers.atlas_sql]` section into `~/.codex/config.toml`, or the target project's `.codex/config.toml`. |
-| Claude Code | [claude-code.json](claude-code.json) | Merge its `atlas_sql` entry into `.mcp.json` at the target project root. For a session, use the command below. |
-| Cursor | [cursor.json](cursor.json) | Merge its `atlas_sql` entry into `~/.cursor/mcp.json` globally, or the target project's `.cursor/mcp.json`. |
+Merge the `atlas_sql` entry into the client's MCP settings, preserve existing entries,
+and reload its server list. For container deployment, follow the [Docker guide](../docs/docker.md). These files are templates, not proof of manual
+acceptance in every client version.
 
-Preserve other MCP entries when merging. These prepared files have not overwritten or registered anything in your clients' existing settings.
+Users then provide a [connection string](../docs/connection-strings.md) and a request,
+such as “Create SQL for monthly revenue, grouped by region, excluding canceled orders.”
+The assistant connects, discovers accessible tables and columns, asks about ambiguous
+business definitions, and validates its SQL. It returns SQL and typed filters; it does
+not execute reports or read business records.
 
-For Claude Code, load the file directly for a session:
+SQL Server additionally needs its optional dependencies and Microsoft ODBC Driver 18;
+see the [SQL Server guide](../docs/sqlserver-support.md). Certificate trust belongs to
+administrator setup. Avoid storing connection strings in client configuration files.
 
-```sh
-claude --mcp-config /Users/ezequielmenegas/git/mcp-sql/configs/claude-code.json
-```
+## Optional operator-managed policy
 
-After saving persistent configuration, restart the client or reload its MCP server list. Expect `atlas_sql_connect`, `atlas_sql_context_get` and `atlas_sql_finalize`, plus `atlas_sql_generate` when a model is configured. The client may ask you to trust the server/project.
+[connections.example.json](connections.example.json) illustrates the separate
+`--connections /private/path/connections.json` compatibility mode. Its table names,
+connection IDs and principal names are placeholders, not built-in customer knowledge.
+This mode uses explicit column grants and external password references; it is unnecessary
+when users supply connection strings. Keep populated files private and outside version
+control. Local grant identities must match the actual OS account (`local#username`).
+The server never creates these example databases or objects.
 
-Formats and locations were checked against the official [Codex MCP documentation](https://developers.openai.com/codex/mcp), [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp), and [Cursor MCP documentation](https://cursor.com/docs/mcp).
+For the persistent local Docker container, use [the Docker Codex template](codex-docker.toml) and [persistent-container setup](../docs/docker.md#keep-a-local-container-running).
 
-## Complete the database configuration
+## Transport configuration
 
-A private `connections.local.json` was initialized with placeholders if it did not already exist. It is ignored by Git and was created with owner-only permissions. [connections.example.json](connections.example.json) is the matching template. No real database credentials are included.
+Local stdio uses the root Compose definition. The connected agent supplies the
+LLM in every transport; the MCP has no model settings or provider credentials.
 
-Before requesting database context:
-
-1. Edit the private `connections.local.json`: set the actual host, database, database reader user, schemas, tables and exact permitted columns. Remove whichever example connection you do not use. PostgreSQL requires version 18; SQL Server's experimental adapter targets major 16/17.
-2. Keep `local#ezequielmenegas` as the local grant identity on this Mac. It represents the OS user running the MCP, independently of the configured database login. Change it if the MCP runs under another OS account.
-3. Provision `ATLAS_SALES_DB_PASSWORD` for PostgreSQL and/or `ATLAS_SQLSERVER_PASSWORD` for SQL Server in the environment of the client process. The JSON clients inherit their launch environment; Codex explicitly forwards the names in `env_vars`. A GUI app may not inherit variables exported in a separate terminal. Do not paste passwords into these client files.
-4. Keep verified TLS and configure trust for the destination's certificate. For SQL Server, install `requirements-sqlserver.lock` and Microsoft ODBC Driver 18 as described in [the SQL Server guide](../docs/sqlserver-support.md).
-
-The PostgreSQL connection ID is `sales-readonly` and uses `contractVersion: "1.0"`. The SQL Server connection ID is `sales-sqlserver` and uses `contractVersion: "1.1"`. One MCP registration serves both connections. The database adapter is selected by the operator configuration.
-
-A successful startup/tool-list check does not test database connectivity. The placeholder destinations cannot supply metadata until you replace them. This MCP constructs and validates SQL; it does not run generated queries.
-
-You can also provide a [connection string](../docs/connection-strings.md) through
-`atlas_sql_connect`, without editing the private connection file. Start the server
-without `--connections` if you only need caller-provided connections.
+[compose.http.yaml](compose.http.yaml) enables shared authenticated HTTP using
+`ATLAS_SQL_HTTP_ENV_FILE`, a private file for issuer, signing-key endpoint, public
+URL and allowed database endpoints. It adds a local backend port and health probe.
+Use the commands and environment reference in the [Docker guide](../docs/docker.md).

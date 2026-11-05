@@ -40,7 +40,9 @@ def sqlserver_engine():
             "ACCEPT_EULA=Y",
             "--env",
             f"MSSQL_SA_PASSWORD={password}",
-            "mcr.microsoft.com/mssql/server:2022-latest",
+            os.environ.get(
+                "ATLAS_SQL_SQLSERVER_IMAGE", "mcr.microsoft.com/mssql/server:2022-latest"
+            ),
         ],
         check=True,
         capture_output=True,
@@ -58,7 +60,11 @@ def sqlserver_engine():
                 name,
                 "/opt/mssql-tools18/bin/sqlcmd",
                 "-S",
-                "localhost",
+                "tcp:127.0.0.1,1433",
+                "-l",
+                "2",
+                "-t",
+                "5",
                 "-U",
                 "sa",
                 "-C",
@@ -83,7 +89,14 @@ def sqlserver_engine():
                 break
             time.sleep(1)
         else:
-            pytest.fail("Disposable SQL Server did not become ready.")
+            pytest.fail(
+                "Disposable SQL Server did not become ready: "
+                + (probe.stdout + probe.stderr).replace(password, "[redacted]")
+            )
+        version = execute("SELECT CAST(SERVERPROPERTY('ProductMajorVersion') AS int);")
+        assert version.returncode == 0, "Native SQL Server version could not be verified"
+        execute.database_major = int(version.stdout.strip())
+        assert execute.database_major in {16, 17}
         yield execute
     finally:
         subprocess.run(
@@ -105,8 +118,8 @@ def sqlserver_engine():
 def test_native_aggregate_types_and_values(
     sqlserver_engine, expression, kind, precision, scale, value
 ):
+    from atlas_sql_mcp.analysis.sqlserver import SqlServerAnalyzer
     from atlas_sql_mcp.domain import Catalog, Column, Relation
-    from atlas_sql_mcp.sqlserver import SqlServerAnalyzer
 
     catalog = Catalog(
         "fixture",
@@ -114,7 +127,7 @@ def test_native_aggregate_types_and_values(
         (Relation("dbo", "fixture", (Column("v", "int", False, type_schema="sys"),)),),
         "test",
         "sqlserver",
-        16,
+        sqlserver_engine.database_major,
     )
     derived = SqlServerAnalyzer().analyze(f"SELECT {expression} AS x FROM dbo.fixture", catalog)
     expected = f"decimal({precision},{scale})" if kind == "decimal" else kind
@@ -129,3 +142,25 @@ SELECT SQL_VARIANT_PROPERTY(x,'BaseType'), SQL_VARIANT_PROPERTY(x,'Precision'),
     assert result.returncode == 0, result.stdout + result.stderr
     rows = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     assert rows == ["|".join((kind, precision, scale, value))]
+
+
+@pytest.mark.parametrize(
+    "expression,expected",
+    [
+        ("CAST(1 AS smallint)+CAST(2 AS smallint)", "smallint"),
+        ("CAST(1 AS tinyint)+CAST(2 AS tinyint)", "tinyint"),
+        ("-CAST(1 AS tinyint)", "smallint"),
+        ("CAST('2026-01-01' AS datetime)", "datetime"),
+        ("CAST('2026-01-01' AS smalldatetime)", "smalldatetime"),
+    ],
+)
+def test_native_legacy_types_and_integer_precedence(sqlserver_engine, expression, expected):
+    from atlas_sql_mcp.analysis.sqlserver import SqlServerAnalyzer
+    from atlas_sql_mcp.domain import Catalog
+
+    catalog = Catalog("fixture", 0, (), "test", "sqlserver", sqlserver_engine.database_major)
+    analyzed = SqlServerAnalyzer().analyze(f"SELECT {expression} AS result", catalog)
+    assert analyzed["outputs"][0]["sqlType"] == expected
+    result = sqlserver_engine(f"SELECT SQL_VARIANT_PROPERTY({expression},'BaseType');")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == expected

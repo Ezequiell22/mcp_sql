@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "atlas_sql": {
-      "command": "/absolute/path/mcp-sql/.venv/bin/atlas-sql-mcp",
-      "args": ["--connections", "/absolute/path/connections.local.json"]
-    }
-  }
-}

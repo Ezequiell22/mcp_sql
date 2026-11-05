@@ -3,11 +3,13 @@
 import ipaddress
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .domain import Principal, SqlError, digest
+from atlas_sql_mcp.budget import METADATA_SECONDS
+from atlas_sql_mcp.domain import Principal, SqlError, digest
 
 
 @dataclass(frozen=True)
@@ -63,28 +65,53 @@ class Connection:
             "user": self.user,
             "password": password,
             "sslmode": self.sslmode,
-            "connect_timeout": 3,
+            "connect_timeout": METADATA_SECONDS,
             "application_name": "atlas_sql_mcp_catalog",
-            "options": "-c default_transaction_read_only=on -c statement_timeout=3000 -c search_path=pg_catalog",
+            "options": f"-c default_transaction_read_only=on -c statement_timeout={METADATA_SECONDS * 1000} -c search_path=pg_catalog",
         }
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate configuration fields are forbidden.")
+        result[key] = value
+    return result
+
+
+def _valid_host(host):
+    if not isinstance(host, str) or not host or len(host) > 256:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return bool(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.?", host))
 
 
 def load_connections(path: Path) -> dict[str, Connection]:
     if path.stat().st_size > 2 * 1024 * 1024:
         raise ValueError("Connection configuration exceeds 2 MiB.")
-    data = json.loads(path.read_text())
-    if set(data) != {"connections"} or not isinstance(data["connections"], list):
+    data = json.loads(path.read_text(), object_pairs_hook=_unique_object)
+    if (
+        not isinstance(data, dict)
+        or set(data) != {"connections"}
+        or not isinstance(data["connections"], list)
+    ):
         raise ValueError("Configuration must contain a connections array only.")
     result = {}
     required = {"id", "host", "port", "dbname", "user", "passwordEnv", "sslmode", "grants"}
     for raw in data["connections"]:
-        if set(raw) not in (required, required | {"dialect"}):
+        if not isinstance(raw, dict) or set(raw) not in (required, required | {"dialect"}):
             raise ValueError("Connection configuration has missing or unknown fields.")
         if any(
-            not isinstance(raw[k], str) or not raw[k] or len(raw[k]) > 256
+            not isinstance(raw[k], str) or not raw[k] or len(raw[k]) > 256 or "\x00" in raw[k]
             for k in ("id", "host", "dbname", "user")
         ):
             raise ValueError("Connection identifiers must be bounded nonempty strings.")
+        if not _valid_host(raw["host"]) or raw["id"].startswith("session-"):
+            raise ValueError("Use a single database host and a non-reserved connection ID.")
         if not isinstance(raw["passwordEnv"], str) or (
             raw["passwordEnv"] and not raw["passwordEnv"].isidentifier()
         ):
@@ -93,12 +120,14 @@ def load_connections(path: Path) -> dict[str, Connection]:
             )
         if type(raw["port"]) is not int or not 1 <= raw["port"] <= 65535:
             raise ValueError("Invalid database port.")
+        if not isinstance(raw["sslmode"], str):
+            raise ValueError("sslmode must be a supported TLS mode string.")
         try:
             loopback = ipaddress.ip_address(raw["host"]).is_loopback
         except ValueError:
             loopback = False
         dialect = raw.get("dialect", "postgresql")
-        if dialect not in {"postgresql", "sqlserver"}:
+        if not isinstance(dialect, str) or dialect not in {"postgresql", "sqlserver"}:
             raise ValueError("Unsupported database dialect.")
         if dialect == "sqlserver" and (raw["sslmode"] != "verify-full" or not raw["passwordEnv"]):
             raise ValueError("SQL Server requires verified TLS and a passwordEnv reference.")
@@ -160,6 +189,8 @@ def load_connections(path: Path) -> dict[str, Connection]:
 
 
 def validate_public_url(value: str) -> str:
+    if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 for c in value):
+        raise ValueError("Authentication URLs must be valid HTTPS URLs.")
     parsed = urlsplit(value)
     if (
         parsed.scheme != "https"
@@ -168,8 +199,26 @@ def validate_public_url(value: str) -> str:
         or parsed.password
         or parsed.query
         or parsed.fragment
+        or (parsed.port is not None and not 1 <= parsed.port <= 65535)
+        or not _valid_host(parsed.hostname)
     ):
         raise ValueError(
             "Shared authentication endpoints require HTTPS without credentials, query, or fragment."
         )
     return value.rstrip("/")
+
+
+def allowed_connection_endpoints(value: str) -> set[str]:
+    """Validate the shared connection allowlist before the listener starts."""
+    endpoints = set()
+    for item in value.split(","):
+        endpoint = item.strip()
+        if not endpoint:
+            continue
+        host, separator, port = endpoint.rpartition(":")
+        if not separator or not _valid_host(host) or not port.isascii() or not port.isdecimal():
+            raise ValueError("Approved database endpoints must be host:port entries.")
+        if not 1 <= int(port) <= 65535:
+            raise ValueError("Approved database endpoint has an invalid port.")
+        endpoints.add(endpoint)
+    return endpoints

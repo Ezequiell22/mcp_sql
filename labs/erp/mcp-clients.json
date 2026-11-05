@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "atlas_sql": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["exec", "-i", "atlas-sql-mcp", "atlas-sql-mcp"]
+    }
+  }
+}

@@ -6,11 +6,11 @@ import pytest
 from conftest import MemoryCatalog, args_for, context_for, with_range
 from test_sqlserver import tsql_catalog as sqlserver_catalog_fixture
 
-from atlas_sql_mcp.analyzer import PostgresAnalyzer
+from atlas_sql_mcp.analysis.postgres import PostgresAnalyzer
+from atlas_sql_mcp.analysis.sqlserver import SqlServerAnalyzer
+from atlas_sql_mcp.application.service import SqlService
 from atlas_sql_mcp.contracts import SCHEMAS, validate
 from atlas_sql_mcp.domain import SqlError, digest
-from atlas_sql_mcp.service import SqlService
-from atlas_sql_mcp.sqlserver import SqlServerAnalyzer
 
 
 @pytest.fixture

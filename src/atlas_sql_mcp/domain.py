@@ -102,7 +102,9 @@ class Catalog:
 
 
 class CatalogPort(Protocol):
-    def load(self, principal: Principal, connection_id: str) -> Catalog: ...
+    def load(
+        self, principal: Principal, connection_id: str, relations: tuple[str, ...] | None = None
+    ) -> Catalog: ...
 
 
 class AnalyzerPort(Protocol):

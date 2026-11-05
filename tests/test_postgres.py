@@ -20,12 +20,12 @@ from conftest import args_for, context_for, with_range
 from large_query import REFERENCE_SQL, large_query
 from test_analyzer import EXPRESSIONS, QUERIES
 
-from atlas_sql_mcp.analyzer import PostgresAnalyzer, normalize_type
-from atlas_sql_mcp.catalog import PostgresCatalog
+from atlas_sql_mcp.analysis.postgres import PostgresAnalyzer, normalize_type
+from atlas_sql_mcp.analysis.worker import ProcessAnalyzer
+from atlas_sql_mcp.application.service import SqlService
 from atlas_sql_mcp.config import Connection
 from atlas_sql_mcp.domain import Principal
-from atlas_sql_mcp.service import SqlService
-from atlas_sql_mcp.worker import ProcessAnalyzer
+from atlas_sql_mcp.metadata.postgres import PostgresCatalog
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("ALLOW_SYNTHETIC_DB_WRITES") != "1",
@@ -255,7 +255,7 @@ def test_stdio_protocol_against_real_database(postgres):
     async def run():
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "atlas_sql_mcp.server", "--connections", str(postgres["path"])],
+            args=["-m", "atlas_sql_mcp.transport.server", "--connections", str(postgres["path"])],
             env={"ATLAS_SQL_TEST_PASSWORD": "test-fixture-only"},
         )
         async with stdio_client(params) as (read, write):
@@ -326,8 +326,8 @@ def test_database_column_privilege_revocation(postgres):
 def test_direct_connection_string_without_config_file(postgres, uri):
     from psycopg.conninfo import make_conninfo
 
-    from atlas_sql_mcp.connections import SessionCatalog
-    from atlas_sql_mcp.sqlserver_catalog import DialectCatalog
+    from atlas_sql_mcp.application.connections import SessionCatalog
+    from atlas_sql_mcp.metadata.router import DialectCatalog
 
     config, principal = postgres["config"], postgres["principal"]
     if uri:
@@ -384,7 +384,7 @@ def test_direct_connection_mcp_stdio_handshake_and_workflow(postgres):
     async def run():
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "atlas_sql_mcp.server"],
+            args=["-m", "atlas_sql_mcp.transport.server"],
         )
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -427,8 +427,8 @@ def test_direct_connection_mcp_stdio_handshake_and_workflow(postgres):
 
 
 def test_direct_connection_wrong_password_and_admin_are_rejected(postgres):
-    from atlas_sql_mcp.connections import SessionCatalog
-    from atlas_sql_mcp.sqlserver_catalog import DialectCatalog
+    from atlas_sql_mcp.application.connections import SessionCatalog
+    from atlas_sql_mcp.metadata.router import DialectCatalog
 
     reader = SessionCatalog(DialectCatalog({}))
     service = SqlService(reader, ProcessAnalyzer())
@@ -460,3 +460,91 @@ def test_direct_connection_wrong_password_and_admin_are_rejected(postgres):
     )
     assert result["error"]["code"] == "CONNECTION_POLICY_VIOLATION"
     assert not reader._sessions
+
+
+@pytest.mark.parametrize("domain", ["laboratory", "logistics"])
+def test_unprepared_schema_is_discovered_and_validated_from_connection_string(postgres, domain):
+    """Use unpredictable real metadata, no predeclared grants/config/model fixture."""
+    from psycopg import sql
+    from psycopg.conninfo import make_conninfo
+
+    from atlas_sql_mcp.application.connections import SessionCatalog
+
+    suffix = uuid.uuid4().hex[:10]
+    schema, table = f"{domain}_{suffix}", f"events_{suffix}"
+    category, observed = f"category_{suffix}", f"observed_{suffix}"
+    with psycopg.connect(**postgres["admin"], autocommit=True) as admin:
+        admin.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+        try:
+            admin.execute(
+                sql.SQL("CREATE TABLE {}.{} ({} text NOT NULL, {} date NOT NULL)").format(
+                    *(sql.Identifier(name) for name in (schema, table, category, observed))
+                )
+            )
+            admin.execute(
+                sql.SQL("GRANT USAGE ON SCHEMA {} TO atlas_reader").format(sql.Identifier(schema))
+            )
+            admin.execute(
+                sql.SQL("GRANT SELECT ON {}.{} TO atlas_reader").format(
+                    sql.Identifier(schema), sql.Identifier(table)
+                )
+            )
+            config = postgres["config"]
+            service = SqlService(SessionCatalog(), ProcessAnalyzer())
+            connected = service.call(
+                "atlas_sql_connect",
+                {
+                    "connectionString": make_conninfo(
+                        host=config.host,
+                        port=config.port,
+                        dbname=config.dbname,
+                        user="atlas_reader",
+                        password="test-fixture-only",
+                    )
+                },
+                postgres["principal"],
+            )
+            assert connected["status"] == "connected", connected
+            context = service.call(
+                "atlas_sql_context_get",
+                {
+                    "contractVersion": "1.2",
+                    "connectionId": connected["connectionId"],
+                    "request": "Count events by category within the selected date range",
+                },
+                postgres["principal"],
+            )
+            assert context["status"] == "context", context
+            discovered = next(r for r in context["relations"] if r["schema"] == schema)
+            assert discovered["name"] == table
+            assert {c["name"] for c in discovered["columns"]} == {category, observed}
+            query = (
+                f"SELECT {category} AS category, COUNT(*) AS event_count FROM {schema}.{table} "
+                f"WHERE {observed} >= $1::date AND {observed} < $2::date GROUP BY {category}"
+            )
+            proposal = with_range(
+                args_for(query, ["category", "event_count"], context["contextId"])
+            )
+            result = service.call("atlas_sql_finalize", proposal, postgres["principal"])
+            assert result["status"] == "validated", result
+            assert result["artifact"]["sql"] == query
+            assert len(result["artifact"]["parameters"]) == 2
+            assert result["artifact"]["validation"]["executionPerformed"] is False
+        finally:
+            admin.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def test_scoped_metadata_rechecks_revoked_schema_usage(postgres):
+    from atlas_sql_mcp.domain import SqlError
+
+    adapter = PostgresCatalog({"sales": postgres["config"]})
+    adapter.load(postgres["principal"], "sales", relations=("public.orders",))
+    with psycopg.connect(**postgres["admin"], autocommit=True) as conn:
+        conn.execute("REVOKE USAGE ON SCHEMA public FROM PUBLIC, atlas_reader")
+    try:
+        with pytest.raises(SqlError) as error:
+            adapter.load(postgres["principal"], "sales", relations=("public.orders",))
+        assert error.value.code == "CONTEXT_STALE"
+    finally:
+        with psycopg.connect(**postgres["admin"], autocommit=True) as conn:
+            conn.execute("GRANT USAGE ON SCHEMA public TO PUBLIC, atlas_reader")

@@ -9,13 +9,13 @@ import pytest
 
 from atlas_sql_mcp.config import Connection, load_connections
 from atlas_sql_mcp.domain import Principal, SqlError
-from atlas_sql_mcp.sqlserver_catalog import (
+from atlas_sql_mcp.metadata.router import DialectCatalog
+from atlas_sql_mcp.metadata.sqlserver import (
     COLUMN_SQL,
     FK_SQL,
     IDENTITY_SQL,
     KEY_SQL,
     RELATION_SQL,
-    DialectCatalog,
     SqlServerCatalog,
     column_type,
     odbc_string,
@@ -191,7 +191,7 @@ def test_catalog_type_modifiers(args, expected):
 
 
 def test_catalog_deadline_stops_subsequent_statements(monkeypatch):
-    import atlas_sql_mcp.sqlserver_catalog as module
+    import atlas_sql_mcp.metadata.sqlserver as module
 
     current = [0.0]
     monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: current[0]))
@@ -202,3 +202,48 @@ def test_catalog_deadline_stops_subsequent_statements(monkeypatch):
             check()
         assert error.value.code == "VALIDATION_TIMEOUT"
         current[0] = 0.0
+
+
+def test_scoped_metadata_ignores_unrelated_unsupported_tables(config, driver):
+    configured = replace(
+        config,
+        grants={
+            "local#analyst": {
+                "dbo.orders": ("id", "amount"),
+                "dbo.unrelated": ("computed_column",),
+            }
+        },
+    )
+    result = SqlServerCatalog({"sales": configured}).load(
+        Principal("local", "analyst"), "sales", relations=("dbo.orders",)
+    )
+    assert [relation.key for relation in result.relations] == ["dbo.orders"]
+    assert [parameters for sql, parameters in driver[0].calls if sql == RELATION_SQL] == [
+        ("dbo", "orders")
+    ]
+
+
+def test_scoped_metadata_rejects_unknown_relation_before_connection(config, driver):
+    with pytest.raises(SqlError) as error:
+        SqlServerCatalog({"sales": config}).load(
+            Principal("local", "analyst"), "sales", relations=("private.hidden",)
+        )
+    assert error.value.code == "OBJECT_NOT_AUTHORIZED"
+    assert not driver[1]
+
+
+def test_scoped_relationships_never_disclose_unchecked_target(config, driver):
+    configured = replace(
+        config,
+        grants={
+            "local#analyst": {
+                "dbo.orders": ("id", "amount"),
+                "private.hidden": ("id",),
+            }
+        },
+    )
+    result = SqlServerCatalog({"sales": configured}).load(
+        Principal("local", "analyst"), "sales", relations=("dbo.orders",)
+    )
+    assert "secret_fk" not in repr(result)
+    assert "hidden" not in repr(result)

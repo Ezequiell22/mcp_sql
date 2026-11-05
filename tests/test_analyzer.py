@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from atlas_sql_mcp.analyzer import PostgresAnalyzer
+from atlas_sql_mcp.analysis.postgres import PostgresAnalyzer
 from atlas_sql_mcp.domain import Column, SqlError
 
 # Each expression exercises a distinct analytical operation. Expected SQL types
@@ -265,3 +265,38 @@ def test_fixed_width_currency_code_in_monthly_totals(catalog):
         ("currency_code", "character"),
         ("total", "numeric"),
     ]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT id FROM public.orders HAVING id>0",
+        "SELECT 1 AS n FROM public.orders HAVING id>0",
+        "SELECT COUNT(DISTINCT c.id) AS n FROM public.orders o JOIN public.customers c "
+        "ON c.id=o.customer_id AND COUNT(DISTINCT c.id)>0",
+    ],
+)
+def test_aggregate_clause_scope_validation(catalog, sql):
+    with pytest.raises(SqlError):
+        PostgresAnalyzer().analyze(sql, catalog)
+
+
+@pytest.mark.parametrize("ordering", ["c.id", "customer_id", "revenue"])
+def test_grouped_report_order_alias_resolution(catalog, ordering):
+    result = PostgresAnalyzer().analyze(
+        "SELECT c.id AS customer_id, SUM(o.net_total) AS revenue "
+        "FROM public.orders o JOIN public.customers c ON c.id=o.customer_id "
+        f"GROUP BY c.id ORDER BY {ordering}",
+        catalog,
+    )
+    assert [o["key"] for o in result["outputs"]] == ["customer_id", "revenue"]
+
+
+def test_order_by_cannot_hide_ungrouped_input(catalog):
+    with pytest.raises(SqlError):
+        PostgresAnalyzer().analyze(
+            "SELECT c.id AS customer_id, SUM(o.net_total) AS revenue "
+            "FROM public.orders o JOIN public.customers c ON c.id=o.customer_id "
+            "GROUP BY c.id ORDER BY o.net_total",
+            catalog,
+        )

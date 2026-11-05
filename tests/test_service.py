@@ -6,9 +6,9 @@ import pytest
 from conftest import args_for, context_for, with_range
 from jsonschema import Draft202012Validator
 
+from atlas_sql_mcp.analysis.worker import ProcessAnalyzer
 from atlas_sql_mcp.contracts import SCHEMAS
 from atlas_sql_mcp.domain import Principal
-from atlas_sql_mcp.worker import ProcessAnalyzer
 
 
 def finalize(service, principal, sql="SELECT id FROM public.orders", outputs=("id",)):
@@ -174,7 +174,7 @@ def test_rate_and_context_bounds(service, principal):
 
 
 def test_response_is_never_silently_truncated(service, principal, monkeypatch):
-    from atlas_sql_mcp import service as service_module
+    from atlas_sql_mcp.application import service as service_module
 
     monkeypatch.setattr(service_module, "OUTPUT_BYTES", 1024)
     result = context_for(service, principal)
