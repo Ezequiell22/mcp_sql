@@ -210,9 +210,8 @@ class SessionCatalog:
             major = self.load(principal, connection_id, relations=()).database_major
         return Catalog(
             connection_id,
-            18 if config.dialect == "postgresql" else 0,
+            major if config.dialect == "sqlserver" else 18,
             entries,
             config.policy_version,
             config.dialect,
-            major if config.dialect == "sqlserver" else None,
         )

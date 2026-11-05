@@ -46,7 +46,7 @@ class Principal:
 @dataclass(frozen=True)
 class Column:
     name: str
-    postgres_type: str
+    sql_type: str
     nullable: bool
     description: str = ""
     type_schema: str = "pg_catalog"
@@ -86,11 +86,10 @@ class Relation:
 @dataclass(frozen=True)
 class Catalog:
     connection_id: str
-    postgres_major: int
+    database_major: int
     relations: tuple[Relation, ...]
     policy_version: str
     dialect: str = "postgresql"
-    database_major: int | None = None
 
     @property
     def fingerprint(self) -> str:
@@ -108,4 +107,6 @@ class CatalogPort(Protocol):
 
 
 class AnalyzerPort(Protocol):
+    def dependencies(self, sql: str, dialect: str) -> dict: ...
+
     def analyze(self, sql: str, catalog: Catalog) -> dict: ...

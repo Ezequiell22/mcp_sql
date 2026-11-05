@@ -45,3 +45,8 @@ A validação cobre apenas o subconjunto anunciado nas capacidades da conexão.
 Não comprova regras de negócio, desempenho ou sucesso de execução. O HTTP não
 possui autenticação própria e compartilha a identidade interna entre os clientes;
 o controle de acesso deve ser aplicado pela infraestrutura externa.
+
+Para equipes ou clientes independentes, use [instâncias HTTP isoladas](docs/docker.md)
+ou stdio. Autenticação externa em uma única instância não separa as sessões.
+Eventos operacionais sanitizados são enviados em JSON para stderr; veja
+[operação e limites](docs/architecture.md).

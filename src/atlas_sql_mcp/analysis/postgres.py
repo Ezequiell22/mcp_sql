@@ -384,20 +384,25 @@ def _pg_metadata() -> dict:
 
 
 class PostgresAnalyzer:
+    def dependencies(self, sql: str, dialect: str) -> dict:
+        from atlas_sql_mcp.analysis.worker import references
+
+        return references(sql, dialect)
+
     def analyze(self, sql: str, catalog: Catalog) -> dict:
-        if catalog.dialect != "postgresql" or catalog.postgres_major != 18:
+        if catalog.dialect != "postgresql" or catalog.database_major != 18:
             raise SqlError("UNSUPPORTED_DATABASE_VERSION", "Only PostgreSQL 18 is tested.")
         native_relations, params, functions = _native(sql, catalog)
         schema_data = {}
         for relation in catalog.relations:
             cols = {}
             for col in relation.columns:
-                typename = normalize_type(col.postgres_type)
+                typename = normalize_type(col.sql_type)
                 if col.type_schema != "pg_catalog" or typename.removesuffix("[]") not in TYPES:
                     # Omit unsupported custom types from resolver, but never silently
                     # omit a requested reference: qualification will reject it.
                     continue
-                cols[col.name] = col.postgres_type
+                cols[col.name] = col.sql_type
             schema_data.setdefault(relation.schema, {})[relation.name] = cols
         schema = MappingSchema(schema_data, dialect="postgres", normalize=False)
         try:

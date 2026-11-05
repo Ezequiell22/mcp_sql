@@ -90,7 +90,7 @@ def test_fixed_catalog_and_hidden_relationships(config, driver):
     c = SqlServerCatalog({"sales": config}).load(Principal("local", "analyst"), "sales")
     assert c.dialect == "sqlserver" and c.database_major == 16
     relation = c.relations[0]
-    assert [col.postgres_type for col in relation.columns] == ["int", "decimal(20,2)"]
+    assert [col.sql_type for col in relation.columns] == ["int", "decimal(20,2)"]
     assert [key.name for key in relation.constraints] == ["pk"]
     assert "hidden" not in repr(c)
     assert len(cursor.calls) == 5

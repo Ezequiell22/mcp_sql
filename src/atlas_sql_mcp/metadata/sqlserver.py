@@ -277,7 +277,7 @@ class SqlServerCatalog:
                             )
                     relations.append(Relation(schema, name, tuple(columns), tuple(constraints)))
                 return Catalog(
-                    connection_id, 0, tuple(relations), config.policy_version, "sqlserver", version
+                    connection_id, version, tuple(relations), config.policy_version, "sqlserver"
                 )
         except SqlError:
             raise

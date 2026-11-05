@@ -123,11 +123,10 @@ def test_native_aggregate_types_and_values(
 
     catalog = Catalog(
         "fixture",
-        0,
+        sqlserver_engine.database_major,
         (Relation("dbo", "fixture", (Column("v", "int", False, type_schema="sys"),)),),
         "test",
         "sqlserver",
-        sqlserver_engine.database_major,
     )
     derived = SqlServerAnalyzer().analyze(f"SELECT {expression} AS x FROM dbo.fixture", catalog)
     expected = f"decimal({precision},{scale})" if kind == "decimal" else kind
@@ -158,7 +157,7 @@ def test_native_legacy_types_and_integer_precedence(sqlserver_engine, expression
     from atlas_sql_mcp.analysis.sqlserver import SqlServerAnalyzer
     from atlas_sql_mcp.domain import Catalog
 
-    catalog = Catalog("fixture", 0, (), "test", "sqlserver", sqlserver_engine.database_major)
+    catalog = Catalog("fixture", sqlserver_engine.database_major, (), "test", "sqlserver")
     analyzed = SqlServerAnalyzer().analyze(f"SELECT {expression} AS result", catalog)
     assert analyzed["outputs"][0]["sqlType"] == expected
     result = sqlserver_engine(f"SELECT SQL_VARIANT_PROPERTY({expression},'BaseType');")

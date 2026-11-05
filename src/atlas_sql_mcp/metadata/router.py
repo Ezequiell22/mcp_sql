@@ -55,9 +55,8 @@ class DialectCatalog:
         )
         return Catalog(
             connection_id,
-            18 if config.dialect == "postgresql" else 0,
+            getattr(rows, "database_major", None) if config.dialect == "sqlserver" else 18,
             entries,
             config.policy_version,
             config.dialect,
-            getattr(rows, "database_major", None) if config.dialect == "sqlserver" else None,
         )

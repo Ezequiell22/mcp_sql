@@ -60,3 +60,12 @@ contagens históricas não representam o checkout atual.
 O diagnóstico `.venv/bin/atlas-sql-check --dialect postgresql /caminho/consulta.sql`
 (também aceita `sqlserver`) verifica apenas parsing. Pode aceitar uma instrução
 de escrita: não substitui autorização, política de leitura ou finalização MCP.
+
+
+## Critério de release
+
+Tags `v*` exigem o job `release-readiness`: ambas as matrizes Python e SQL Server
+2022/2025 devem passar. Se `ACCEPT_SQLSERVER_EULA` não estiver habilitado pelo
+administrador após aceitar as licenças, a verificação da tag falha em vez de
+tratar o job ignorado como evidência de suporte. Configure a proteção de tags e
+a publicação para depender desse resultado; criar uma tag não publica um pacote.

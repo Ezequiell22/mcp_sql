@@ -258,6 +258,11 @@ def _arithmetic(node, a, b):
 
 
 class SqlServerAnalyzer:
+    def dependencies(self, sql: str, dialect: str) -> dict:
+        from atlas_sql_mcp.analysis.worker import references
+
+        return references(sql, dialect)
+
     def analyze(self, sql: str, catalog: Catalog) -> dict:
         if catalog.dialect != "sqlserver" or catalog.database_major not in {16, 17}:
             raise SqlError(
@@ -416,7 +421,7 @@ class SqlServerAnalyzer:
                 if col.type_schema != "sys":
                     continue
                 try:
-                    cols[col.name] = normalize_type(col.postgres_type)
+                    cols[col.name] = normalize_type(col.sql_type)
                 except SqlError:
                     continue
             schema_data.setdefault(relation.schema, {})[relation.name] = cols
@@ -475,7 +480,7 @@ class SqlServerAnalyzer:
                     col = relation.column_map.get(node.name) if relation else None
                     if col is None or col.type_schema != "sys":
                         raise SqlError("OBJECT_NOT_AUTHORIZED", "A column is unavailable.", "sql")
-                    datatype = normalize_type(col.postgres_type)
+                    datatype = normalize_type(col.sql_type)
                     origins.add(f"{relation.key}.{col.name}")
                     dependencies.update(origins)
                 elif isinstance(source, Scope):

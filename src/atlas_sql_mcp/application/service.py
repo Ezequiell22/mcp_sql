@@ -3,19 +3,25 @@
 import secrets
 import threading
 import time
-from collections import deque
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from atlas_sql_mcp.analysis.bindings import validate_bindings
-from atlas_sql_mcp.analysis.limits import MAX_DEPTH, MAX_NODES, MAX_SQL_BYTES
-from atlas_sql_mcp.analysis.postgres import FUNCTIONS
 from atlas_sql_mcp.analysis.postgres_types import normalize_type
-from atlas_sql_mcp.analysis.worker import ProcessAnalyzer
+from atlas_sql_mcp.application.context import Context, ContextStore, Cursor
+from atlas_sql_mcp.application.policy import (
+    CONTEXT_SECONDS,
+    INPUT_BYTES,
+    OUTPUT_BYTES,
+    REQUEST_SECONDS,
+    capabilities,
+    validate_contract_version,
+)
 from atlas_sql_mcp.budget import request_budget
 from atlas_sql_mcp.contracts import SCHEMAS, validate
+from atlas_sql_mcp.diagnostics import operation
 from atlas_sql_mcp.domain import (
     AnalyzerPort,
     Catalog,
@@ -27,48 +33,10 @@ from atlas_sql_mcp.domain import (
 )
 
 POLICY_REVISION = "atlas-sql-policy-2"
-INPUT_BYTES = 512 * 1024
-OUTPUT_BYTES = 1024 * 1024
-CONTEXT_SECONDS = 600
-REQUEST_SECONDS = 20
-
-
-def validate_contract_version(args: dict, catalog: Catalog) -> None:
-    expected = "1.1" if catalog.dialect == "sqlserver" else "1.0"
-    if args["contractVersion"] not in {expected, "1.2"}:
-        raise SqlError(
-            "INVALID_CONTRACT",
-            f"This connection requires contractVersion {expected}.",
-            "contractVersion",
-        )
 
 
 def iso(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, UTC).isoformat()
-
-
-@dataclass(frozen=True)
-class Context:
-    principal: Principal
-    request_hash: str
-    connection_id: str
-    fingerprint: str
-    policy_version: str
-    expires: float
-    indexed: bool = False
-    dialect: str = "postgresql"
-    # Only fingerprints are retained; live typed metadata is never a persistent
-    # business catalog. Each group records the exact scope originally disclosed.
-    detail_groups: dict[tuple[str, ...], str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class Cursor:
-    principal: Principal
-    context_id: str
-    focus_hash: str
-    offset: int
-    expires: float
 
 
 class SqlService:
@@ -82,15 +50,25 @@ class SqlService:
             clock,
             timezone_name,
         )
-        self._contexts: dict[str, Context] = {}
-        self._cursors: dict[str, Cursor] = {}
-        self._rates: dict[Principal, deque] = {}
-        self._lock = threading.RLock()
+        self.state = ContextStore(clock=clock)
         self._admission = threading.BoundedSemaphore(10)
 
     def call(self, tool: str, arguments: dict, principal: Principal) -> dict:
-        with request_budget(REQUEST_SECONDS):
-            return self._call(tool, arguments, principal)
+        with operation(tool) as event, request_budget(REQUEST_SECONDS):
+            result = self._call(tool, arguments, principal)
+            code = result.get("error", {}).get("code")
+            event["outcome"] = (
+                "timeout"
+                if code == "VALIDATION_TIMEOUT"
+                else "internal_error"
+                if code == "INTERNAL_VALIDATION_ERROR"
+                else "rejected"
+                if code
+                else "success"
+            )
+            if code == "INTERNAL_VALIDATION_ERROR":
+                result["error"]["message"] += f" Diagnostic ID: {event['requestId']}."
+            return result
 
     def _call(self, tool: str, arguments: dict, principal: Principal) -> dict:
         try:
@@ -103,7 +81,7 @@ class SqlService:
                 raise SqlError(
                     "INPUT_TOO_LARGE", "Natural-language request exceeds 16 KiB UTF-8.", "request"
                 )
-            self._admit(principal)
+            self.state.admit(principal)
             if not self._admission.acquire(blocking=False):
                 raise SqlError("RATE_LIMITED", "Concurrent request limit reached.", retryable=True)
             try:
@@ -136,8 +114,8 @@ class SqlService:
                 )
             if pending_detail is not None:
                 key, scope, fingerprint = pending_detail
-                with self._lock:
-                    stored = self._get(key, principal)
+                with self.state.lock:
+                    stored = self.state.get(key, principal)
                     previous = stored.detail_groups.get(scope)
                     if previous is not None and previous != fingerprint:
                         raise SqlError(
@@ -181,28 +159,6 @@ class SqlService:
             )
         return result
 
-    def _admit(self, principal: Principal) -> None:
-        now = self.clock()
-        with self._lock:
-            self._contexts = {k: v for k, v in self._contexts.items() if v.expires > now}
-            self._cursors = {k: v for k, v in self._cursors.items() if v.expires > now}
-            self._rates = {p: q for p, q in self._rates.items() if q and q[-1] > now - 60}
-            queue = self._rates.setdefault(principal, deque())
-            while queue and queue[0] <= now - 60:
-                queue.popleft()
-            if len(queue) >= 60 or len(self._rates) > 1000:
-                raise SqlError("RATE_LIMITED", "Identity request budget exceeded.", retryable=True)
-            queue.append(now)
-
-    def _get(self, key: str, principal: Principal) -> Context:
-        with self._lock:
-            context = self._contexts.get(key)
-        if not context or context.principal != principal or context.expires <= self.clock():
-            raise SqlError(
-                "CONTEXT_EXPIRED", "Context is unavailable or expired. Request fresh context."
-            )
-        return context
-
     def _fresh(self, context: Context, principal: Principal) -> Catalog:
         loader = self.catalog.index if context.indexed else self.catalog.load
         catalog = loader(principal, context.connection_id)
@@ -217,10 +173,10 @@ class SqlService:
 
     def _scoped_fresh(self, context: Context, sql: str, principal: Principal) -> Catalog:
         """Recheck only inspected groups needed by SQL, then project parser input."""
-        candidates = ProcessAnalyzer().dependencies(sql, context.dialect)
+        candidates = self.analyzer.dependencies(sql, context.dialect)
         names = set(candidates["relations"])
         inherited = set(candidates["inheritedRelations"])
-        with self._lock:
+        with self.state.lock:
             groups = dict(context.detail_groups)
         loaded = {}
         needed = set(names)
@@ -297,15 +253,35 @@ class SqlService:
     def context(self, args: dict, principal: Principal) -> dict:
         now = self.clock()
         key = args.get("contextId")
+        focus = args.get("focus", {})
+        focused = focus.get("relations", [])
+        page_size = args.get("pageSize", 25)
+        focused_details = None
         if key:
-            context = self._get(key, principal)
+            context = self.state.get(key, principal)
             if context.connection_id != args["connectionId"] or context.request_hash != digest(
                 args["request"]
             ):
                 raise SqlError(
                     "CONTEXT_STALE", "Context is bound to another request or connection."
                 )
-            catalog = self._fresh(context, principal)
+            if (
+                context.indexed
+                and focused
+                and len(focused) <= page_size
+                and not args.get("cursor")
+                and not focus.get("search")
+            ):
+                catalog = self.catalog.load(
+                    principal, context.connection_id, relations=tuple(sorted(focused))
+                )
+                if self._policy(catalog) != context.policy_version:
+                    raise SqlError(
+                        "CONTEXT_STALE", "Connection policy changed. Request fresh context."
+                    )
+                focused_details = catalog
+            else:
+                catalog = self._fresh(context, principal)
         else:
             if args.get("cursor"):
                 raise SqlError("INVALID_CONTRACT", "A cursor requires its original contextId.")
@@ -324,23 +300,23 @@ class SqlService:
                 dialect=catalog.dialect,
             )
             key = secrets.token_urlsafe(32)
-            with self._lock:
+            with self.state.lock:
                 if (
-                    len(self._contexts) >= 1000
-                    or sum(c.principal == principal for c in self._contexts.values()) >= 25
+                    len(self.state.contexts) >= 1000
+                    or sum(c.principal == principal for c in self.state.contexts.values()) >= 25
                 ):
                     raise SqlError(
                         "RATE_LIMITED", "Context storage budget reached.", retryable=True
                     )
-                self._contexts[key] = context
+                self.state.contexts[key] = context
         validate_contract_version(args, catalog)
         focus = args.get("focus", {})
         page_size = args.get("pageSize", 25)
         focus_hash = digest([focus, page_size])
         offset = 0
         if args.get("cursor"):
-            with self._lock:
-                cursor = self._cursors.get(args["cursor"])
+            with self.state.lock:
+                cursor = self.state.cursors.get(args["cursor"])
             if (
                 not cursor
                 or cursor.principal != principal
@@ -379,11 +355,13 @@ class SqlService:
         pending_detail = None
         if context.indexed and not index_only and page:
             scope = tuple(sorted(r.key for r in page))
-            details = self.catalog.load(principal, context.connection_id, relations=scope)
+            details = focused_details or self.catalog.load(
+                principal, context.connection_id, relations=scope
+            )
             if self._policy(details) != context.policy_version:
                 raise SqlError("CONTEXT_STALE", "Connection policy changed. Request fresh context.")
             fingerprint = details.fingerprint
-            with self._lock:
+            with self.state.lock:
                 previous = context.detail_groups.get(scope)
                 if previous is not None and previous != fingerprint:
                     raise SqlError(
@@ -400,11 +378,11 @@ class SqlService:
             page = [details_by_key[r.key] for r in page]
         next_cursor = None
         if offset + len(page) < len(relations):
-            with self._lock:
-                if len(self._cursors) >= 5000:
+            with self.state.lock:
+                if len(self.state.cursors) >= 5000:
                     raise SqlError("RATE_LIMITED", "Cursor storage budget reached.", retryable=True)
                 next_cursor = secrets.token_urlsafe(32)
-                self._cursors[next_cursor] = Cursor(
+                self.state.cursors[next_cursor] = Cursor(
                     principal, key, focus_hash, offset + len(page), context.expires
                 )
         type_key = "sqlType" if catalog.dialect == "sqlserver" else "postgresType"
@@ -420,7 +398,7 @@ class SqlService:
                     "columns": [
                         {
                             "name": c.name,
-                            type_key: c.postgres_type,
+                            type_key: c.sql_type,
                             "nullable": c.nullable,
                             "description": c.description,
                             "descriptionProvenance": "untrusted_database_comment",
@@ -459,7 +437,7 @@ class SqlService:
             **(
                 {"databaseMajorVersion": catalog.database_major}
                 if catalog.dialect == "sqlserver"
-                else {"postgresMajorVersion": catalog.postgres_major}
+                else {"postgresMajorVersion": catalog.database_major}
             ),
             "timezone": self.timezone,
             "clock": iso(now),
@@ -492,84 +470,10 @@ class SqlService:
             "nextCursor": next_cursor,
         }
 
-    @staticmethod
-    def capabilities(dialect="postgresql") -> dict:
-        if dialect == "sqlserver":
-            from atlas_sql_mcp.analysis.sqlserver import FUNCTIONS as TSQL_FUNCTIONS
-            from atlas_sql_mcp.analysis.sqlserver import SESSION_SETTINGS
-
-            base = SqlService.capabilities()
-            base.pop("postgresMajorVersions")
-            base["databaseMajorVersions"] = [16, 17]
-            base["requiredSessionSettings"] = dict(SESSION_SETTINGS)
-            base["features"] = [
-                "qualified_base_tables",
-                "governed_joins",
-                "nonrecursive_ctes",
-                "derived_tables",
-                "numeric_aggregates",
-                "conditional_aggregates",
-                "ranking_windows",
-                "typed_named_parameters",
-                "ordered_top",
-            ]
-            base["unsupported"] += [
-                "native_server_syntax_verification",
-                "set_operations",
-                "recursive_ctes",
-                "aggregate_windows",
-                "implicit_type_coercion",
-                "decimal_scale_reduction",
-                "query_hints",
-                "temporal_tables",
-                "computed_or_masked_columns",
-            ]
-            base["approvedFunctions"] = sorted(TSQL_FUNCTIONS | {"cast"})
-            return base
-        return {
-            "postgresMajorVersions": [18],
-            "features": [
-                "qualified_base_tables",
-                "governed_joins",
-                "ctes",
-                "recursive_ctes",
-                "correlated_subqueries",
-                "window_functions",
-                "calculations",
-                "grouping_sets",
-                "set_operations",
-                "typed_positional_parameters",
-                "large_queries",
-            ],
-            "unsupported": [
-                "views_without_dependency_attestation",
-                "custom_types_or_functions",
-                "projection_wildcards",
-                "natural_or_using_joins",
-                "cartesian_joins",
-                "table_valued_functions",
-                "nullable_runtime_parameters",
-                "query_execution",
-                "cost_estimation",
-            ],
-            "approvedFunctions": sorted(FUNCTIONS),
-            "requiredSessionSettings": {"search_path": "pg_catalog"},
-            "limits": {
-                "sqlBytes": MAX_SQL_BYTES,
-                "inputBytes": INPUT_BYTES,
-                "outputBytes": OUTPUT_BYTES,
-                "astNodes": MAX_NODES,
-                "astDepth": MAX_DEPTH,
-                "contextSeconds": CONTEXT_SECONDS,
-                "analysisSeconds": 7,
-            },
-            "businessRowsRead": False,
-            "queryExecutionAvailable": False,
-            "parameterCastsRequired": True,
-        }
+    capabilities = staticmethod(capabilities)
 
     def finalize(self, args: dict, principal: Principal) -> dict:
-        context = self._get(args["contextId"], principal)
+        context = self.state.get(args["contextId"], principal)
         deadline = time.monotonic() + REQUEST_SECONDS
         catalog = (
             self._scoped_fresh(context, args["sql"], principal)
@@ -684,7 +588,7 @@ class SqlService:
             **(
                 {"databaseMajorVersion": catalog.database_major}
                 if catalog.dialect == "sqlserver"
-                else {"postgresMajorVersion": catalog.postgres_major}
+                else {"postgresMajorVersion": catalog.database_major}
             ),
             "sql": args["sql"],
             "parameters": sorted(deepcopy(args["parameters"]), key=lambda p: p["position"]),

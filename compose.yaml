@@ -6,7 +6,6 @@ services:
       context: .
       args:
         ACCEPT_EULA: ${ACCEPT_EULA:-N}
-    container_name: atlas-sql-mcp
     command: ["--transport", "stdio"]
     stdin_open: true
     restart: unless-stopped

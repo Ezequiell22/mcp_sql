@@ -17,7 +17,7 @@ from atlas_sql_mcp.domain import Catalog, Column, Constraint, Principal, Relatio
 def tsql_catalog():
     return Catalog(
         "sales",
-        0,
+        16,
         (
             Relation(
                 "dbo",
@@ -45,7 +45,6 @@ def tsql_catalog():
         ),
         "fixture-policy",
         "sqlserver",
-        16,
     )
 
 
@@ -282,7 +281,7 @@ def test_wrong_context_version_does_not_consume_storage(tsql_catalog):
     )
     assert result["error"]["code"] == "INVALID_CONTRACT"
     assert "1.1" in result["error"]["message"]
-    assert not service._contexts
+    assert not service.state.contexts
 
 
 @pytest.mark.parametrize(
@@ -363,7 +362,7 @@ def test_erp_type_defaults_preserve_values(datatype, value):
 def mixed_case_erp_catalog():
     return Catalog(
         "erp",
-        0,
+        16,
         (
             Relation(
                 "dbo",
@@ -388,7 +387,6 @@ def mixed_case_erp_catalog():
         ),
         "test",
         "sqlserver",
-        16,
     )
 
 

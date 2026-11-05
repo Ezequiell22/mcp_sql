@@ -14,8 +14,8 @@ chave de API, geração interna, API de execução ou ciclo de vida de relatóri
 
 ## Componentes
 
-- `domain.py`: modelos e portas independentes de MCP e drivers.
-- `application/`: conexões temporárias, contexto e finalização.
+- `domain.py`: modelos e portas independentes de MCP e drivers, com `sql_type` e `database_major` neutros.
+- `application/`: conexões temporárias, contexto e finalização; `policy.py` concentra capacidades por dialeto.
 - `metadata/`: consultas fixas aos catálogos PostgreSQL e SQL Server.
 - `analysis/`: análise estática isolada, tipos, dependências e bindings.
 - `transport/`: ferramentas MCP por stdio ou Streamable HTTP.
@@ -60,3 +60,20 @@ limite produz erro, nunca truncamento ou validação parcial.
 
 Os testes usam dados sintéticos somente em `tests/`; eles não integram a imagem
 nem representam um catálogo de produção. Veja [como verificar](testing.md).
+
+
+## Operação
+
+O processo emite eventos JSON em stderr por chamada, com ID aleatório de
+correlação, ferramenta conhecida, duração e resultado (`success`, `rejected`,
+`timeout` ou `internal_error`). Erros internos devolvem o mesmo ID ao cliente.
+Não são registrados argumentos, SQL, nomes do banco, identidades, mensagens de
+exceção ou credenciais. O coletor externo pode agregar latência, falhas e timeouts.
+
+Continuações focadas que cabem em uma página consultam somente as tabelas
+solicitadas, com revalidação de grants e fingerprints dos detalhes. Páginas amplas
+continuam usando um índice vivo; não há cache que possa expor grants revogados.
+A finalização mantém as duas verificações de metadados e privilégios. A extração
+de dependências usa a porta do analisador injetado, isolada em processo no produto.
+
+Para clientes independentes, aplique o [isolamento por implantação](docker.md).

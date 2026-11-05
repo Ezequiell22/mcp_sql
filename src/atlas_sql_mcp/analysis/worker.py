@@ -29,11 +29,10 @@ def catalog_from_dict(raw: dict) -> Catalog:
         relations.append(Relation(**value))
     return Catalog(
         raw["connection_id"],
-        raw["postgres_major"],
+        raw["database_major"],
         tuple(relations),
         raw["policy_version"],
         raw.get("dialect", "postgresql"),
-        raw.get("database_major"),
     )
 
 

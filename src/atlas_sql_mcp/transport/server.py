@@ -23,6 +23,7 @@ from atlas_sql_mcp.application.connections import SessionCatalog
 from atlas_sql_mcp.application.service import INPUT_BYTES, SqlService
 from atlas_sql_mcp.config import allowed_connection_endpoints, load_connections, validate_public_url
 from atlas_sql_mcp.contracts import SCHEMAS
+from atlas_sql_mcp.diagnostics import configure as configure_diagnostics
 from atlas_sql_mcp.domain import Principal, canonical
 from atlas_sql_mcp.metadata.router import DialectCatalog
 
@@ -208,6 +209,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8091)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
+    configure_diagnostics()
     try:
         if args.connections is not None:
             load_connections(args.connections)

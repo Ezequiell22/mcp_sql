@@ -69,3 +69,17 @@ jobs:
           ATLAS_SQL_DOCKER_IMAGE: atlas-sql-mcp:ci
           ATLAS_SQL_SQLSERVER_IMAGE: mcr.microsoft.com/mssql/server:${{ matrix.sqlserver }}
         run: python scripts/verify.py --integration
+
+  release-readiness:
+    # Tag builds cannot be green when licensed dual-database verification was skipped.
+    if: always() && startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, docker-sqlserver]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both database integration matrices
+        env:
+          BASE_RESULT: ${{ needs.verify.result }}
+          DUAL_DATABASE_RESULT: ${{ needs.docker-sqlserver.result }}
+        run: |
+          test "$BASE_RESULT" = success
+          test "$DUAL_DATABASE_RESULT" = success

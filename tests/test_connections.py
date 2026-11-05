@@ -493,7 +493,7 @@ def test_large_schema_connects_without_loading_full_metadata(
     assert not reads
     index = reader.index(principal, connected["connectionId"])
     assert len(index.relations) == 1500
-    assert index.relations[0].columns[0].postgres_type == ""
+    assert index.relations[0].columns[0].sql_type == ""
     assert not reads
 
 

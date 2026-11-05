@@ -19,7 +19,7 @@ Configure o cliente para executar `docker` com estes argumentos:
 Mantenha `-i` e não use `-t`. Não é necessário publicar porta. Para um contêiner
 persistente, execute `ACCEPT_EULA=Y docker compose up -d --build` e registre o
 cliente com `docker` e os argumentos
-`["exec", "-i", "atlas-sql-mcp", "atlas-sql-mcp"]`. Cada cliente cria um processo
+`["compose", "exec", "-T", "mcp", "atlas-sql-mcp"]`. Cada cliente cria um processo
 MCP próprio; seus handles expiram quando o processo termina.
 
 `localhost` indica o próprio contêiner. Use o hostname real do banco, uma rede
@@ -58,3 +58,31 @@ leitura e passados por `--connections`; a identidade stdio da imagem é `local#a
 Para parar o serviço, use `docker compose down` com os mesmos arquivos Compose.
 Valide a imagem no ambiente de destino e registre seu digest antes de implantar;
 um build local não certifica compatibilidade ou segurança de produção.
+
+
+## Isolamento entre equipes ou clientes
+
+Um processo HTTP atende apenas um grupo de confiança. Autenticar usuários no
+proxy não separa suas sessões dentro do processo. Para grupos independentes,
+use projetos Compose distintos, cada um com seu arquivo privado de ambiente,
+endpoint público, porta de loopback e regras de acesso no ingresso:
+
+```sh
+ACCEPT_EULA=Y ATLAS_SQL_HTTP_PORT=8091 ATLAS_SQL_HTTP_ENV_FILE=/private/team-a.env \
+  docker compose -p atlas-team-a -f compose.yaml -f configs/compose.http.yaml up -d --build
+ACCEPT_EULA=Y ATLAS_SQL_HTTP_PORT=8092 ATLAS_SQL_HTTP_ENV_FILE=/private/team-b.env \
+  docker compose -p atlas-team-b -f compose.yaml -f configs/compose.http.yaml up -d --build
+```
+
+Configure `ATLAS_SQL_PUBLIC_URL` com hosts distintos nos dois arquivos e limite
+`ATLAS_SQL_CONNECTION_HOSTS` aos bancos do respectivo grupo. O ingresso deve
+autenticar e autorizar o grupo A antes de encaminhar exclusivamente para
+`127.0.0.1:8091`, e o grupo B exclusivamente para `127.0.0.1:8092`; rejeite rotas
+sem autorização. Não publique as portas em interfaces externas, compartilhe
+arquivos de grants ou balanceie grupos entre esses processos. Cabeçalhos de
+identidade enviados pelo cliente não alteram `shared#anonymous`.
+
+Projetos distintos criam processos, redes, credenciais em memória, contextos e
+orçamentos separados. Para isolamento por pessoa, use um projeto por pessoa ou
+stdio. Esta receita depende da configuração correta do ingresso externo; ela
+não oferece autenticação ou isolamento por usuário em um processo compartilhado.

@@ -19,7 +19,7 @@ class ScopedCatalog:
         return replace(
             self.value,
             relations=tuple(
-                replace(r, columns=tuple(replace(c, postgres_type="") for c in r.columns))
+                replace(r, columns=tuple(replace(c, sql_type="") for c in r.columns))
                 for r in self.value.relations
             ),
         )
@@ -251,8 +251,8 @@ def test_oversized_failed_page_never_becomes_inspected_scope():
     principal = Principal("local", "reader")
     failed = context(service, principal, focus={"relations": ["erp.wide"]})
     assert failed["error"]["code"] == "OUTPUT_TOO_LARGE", failed
-    assert len(service._contexts) == 1
-    stored = next(iter(service._contexts.values()))
+    assert len(service.state.contexts) == 1
+    stored = next(iter(service.state.contexts.values()))
     assert stored.detail_groups == {}
 
 
@@ -270,3 +270,37 @@ def test_dependency_extraction_folds_only_unquoted_postgres_identifiers():
     analyzer = ProcessAnalyzer()
     assert analyzer.references("SELECT ID FROM ERP.ORDERS", "postgresql") == ["erp.orders"]
     assert analyzer.references('SELECT "ID" FROM "ERP"."ORDERS"', "postgresql") == ["ERP.ORDERS"]
+
+
+def test_focused_continuation_skips_full_index_and_uses_injected_dependencies(large):
+    adapter, service, principal = large
+    indexed = context(service, principal)
+
+    def no_index(*args):
+        raise AssertionError("Focused metadata must not rescan the complete database")
+
+    adapter.index = no_index
+    focused = context(
+        service,
+        principal,
+        contextId=indexed["contextId"],
+        focus={"relations": ["erp.table_1499"]},
+    )
+    assert focused["status"] == "context", focused
+    assert adapter.loads == [("erp.table_1499",)]
+    calls = []
+    delegate = service.analyzer
+
+    class InjectedAnalyzer:
+        def dependencies(self, sql, dialect):
+            calls.append((sql, dialect))
+            return {"relations": ["erp.table_1499"], "inheritedRelations": []}
+
+        def analyze(self, sql, catalog):
+            return delegate.analyze(sql, catalog)
+
+    service.analyzer = InjectedAnalyzer()
+    result = finalize(service, principal, indexed["contextId"])
+    assert result["status"] == "validated", result
+    assert len(calls) == 2
+    assert all(dialect == "postgresql" for _, dialect in calls)
