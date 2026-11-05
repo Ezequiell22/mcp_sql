@@ -1,35 +1,60 @@
-# Tool and artifact contract
+# Contrato MCP
 
-Prefer **contract 1.2** for both supported dialects: `sqlType`,
-`databaseMajorVersion`, and `databaseMajorVersions` are database-neutral.
-Legacy 1.0/1.1 remain compatible. See the [migration and exact input fields](neutral-contract.md).
+Os [schemas JSON](../schemas/) definem os campos aceitos e retornados. Prefira
+`contractVersion: "1.2"` para os dois bancos, com `sqlType`,
+`databaseMajorVersion` e `databaseMajorVersions`. As versões legadas 1.0
+(PostgreSQL, campos `postgresType`/`postgresMajorVersion`) e 1.1 (SQL Server,
+campos neutros) permanecem compatíveis.
 
-`atlas_sql_connect` accepts a connection string and returns `connectionId`, dialect,
-contract version and expiry. Existing configured connection IDs remain supported.
+## Ferramentas
 
-1. `atlas_sql_context_get`: `contractVersion: "1.2"`, `connectionId`, and natural-language `request`; optional focused search, relation list, included details, and page size. Returns an opaque ten-minute handle, authorized catalog, constraints, capabilities, metadata/policy fingerprints, clock/timezone, coverage, and a cursor. Follow-up calls retain request, connection, context, and exact focus/page size when following a cursor.
-2. `atlas_sql_finalize`: `contextId`, host-written `sql`, `parameters`, `filters`, `outputs`, and `semantics`. Rechecks identity, schema, policy, syntax, nested dependencies, supported types, join grain risks, binding and output contracts, and freshness again after analysis. Returns a portable artifact or a safe structured error. It cannot infer every unresolved business choice; the host asks the user before calling it.
+| Ferramenta | Entrada e resultado |
+| --- | --- |
+| `atlas_sql_connect` | Recebe `connectionString` e, opcionalmente, `schemas`. Retorna `connectionId`, dialeto, versão legada e expiração. |
+| `atlas_sql_context_get` | Recebe versão, conexão e `request`; aceita foco e paginação. Retorna contexto, metadados autorizados, capacidades e cursor. |
+| `atlas_sql_finalize` | Recebe exatamente `contractVersion`, `contextId`, `sql`, `parameters`, `filters`, `outputs` e `semantics`. Retorna artefato ou erro estruturado. |
 
-Large live schemas return an index first: `coverage: "partial"`, empty typed
-`columns`/`relationships`, and guidance in `omittedDetails`. Inspect exact
-`focus.relations` in the same context before finalizing SQL that uses them.
-Use related tables in the same group to retrieve their relationship evidence.
-`focus.include: []` requests names only and does not count as typed inspection.
-When following a cursor, preserve the original focus and page size; when selecting
-a different group, keep the context/request/connection and omit the old cursor.
-`CONTEXT_INCOMPLETE` means the required typed scope has not been inspected;
-`CONTEXT_STALE` means metadata or permissions changed and a fresh context is needed.
-For live indexed contexts, the context fingerprint identifies the authorized
-name/column-privilege snapshot; the artifact dependency fingerprint identifies
-the typed dependency metadata actually validated. These scopes differ, so do not
-require equality between the two fingerprints. Consumers must reauthorize the
-artifact dependencies before execution.
+Conexões previamente configuradas também podem ser usadas. Não envie
+`connectionId` ou `explanation` à finalização. Declarações de saída aceitam
+`key`, `label` e, opcionalmente, tipo SQL e `unit`; `lineage`, `logicalType` e
+`nullable` são derivados pelo servidor.
 
-[Context request](../examples/context.json) and [finalization request](../examples/finalize.json) examples match the implemented schemas. Replace the finalization example's context ID with the returned handle and confirm its schema/business assumptions before use. The connected agent constructs these requests, writes the SQL and handles the discovery/validation loop. The server has no LLM or generation endpoint.
+## Descoberta e contexto
 
-[Executable schemas](../schemas/) are exported from the same definitions the server validates. After intentionally changing the contract, regenerate with `python -m atlas_sql_mcp.contracts schemas`; `--check` detects stale exports. The [specification example](archive/sql-generation-mcp-spec.md#output-and-binding-contract) explains the full target artifact; the exported schemas are the implemented wire contract.
+Catálogos grandes retornam primeiro um índice de nomes. `coverage: "partial"`
+não significa catálogo completo. Inspecione `focus.relations` com os detalhes
+tipados antes de usar suas tabelas; `focus.include: []` retorna apenas nomes.
 
-For PostgreSQL contract 1.0, all runtime values use explicitly cast `$1`, `$2`, … parameters. SQL Server contract 1.1 uses `CAST(@p1 AS type)` and `sqlType` fields; see the [SQL Server guide](sqlserver-support.md). The filter array supplies each position's logical name, SQL type, lossless value format and field binding; the caller must bind values rather than interpolate them. Every parameter occurrence must affect a WHERE/HAVING/JOIN predicate. Temporal ranges use inclusive `from` and exclusive `until`; declarations are checked against their SQL comparison operators. Decimal and integer defaults/bounds are strings to retain precision. Nullable runtime parameters are explicitly unsupported in this version. Array filters declare an exact element type; empty arrays used with `ANY` match no rows, and null elements are not supported by the binding contract.
+Ao seguir `nextCursor`, preserve contexto, solicitação, conexão, foco e tamanho
+de página. Para mudar de grupo, mantenha o contexto e omita o cursor anterior.
+`CONTEXT_INCOMPLETE` exige inspeção; `CONTEXT_STALE` ou expiração exigem contexto
+novo. O fingerprint do índice e o das dependências tipadas têm escopos distintos
+e não precisam ser iguais.
 
-Output labels and assumptions are host declarations. Result names/types/lineage come from analysis. `nullable: null` means unknown, not nonnullable. The `artifactHash` covers SQL, bindings, outputs, semantic declarations and schema/policy dependencies; time-dependent validation evidence is excluded. SQL is preserved verbatim. PostgreSQL consumers must honor `requiredSessionSettings.search_path = pg_catalog`;
-SQL Server consumers must apply its declared session settings. All consumers must reauthorize dependencies and freshness, and apply their own execution limits before running it. The artifact is not an execution grant.
+## Parâmetros e artefato
+
+PostgreSQL exige casts explícitos como `$1::date`; SQL Server usa
+`CAST(@p1 AS date)`. Posições são contíguas e cada ocorrência deve participar de
+predicado WHERE/HAVING/JOIN. Vincule valores por parâmetros, nunca interpolação.
+O consumidor ODBC precisa mapear nomes para posições `?` com um parser adequado;
+o MCP não reescreve nem executa a consulta.
+
+Filtros declaram tipo, posição, campo e validação. Intervalos temporais usam
+`from` inclusivo e `until` exclusivo, coerentes com os operadores SQL.
+Inteiros e decimais em limites/defaults usam strings para preservar precisão.
+Parâmetros anuláveis não são suportados; arrays exigem tipo exato e não aceitam
+elementos nulos. Labels e premissas são declarações do agente.
+
+O artefato preserva o SQL e inclui dependências, tipos, linhagem, hash e evidências.
+`nullable: null` significa desconhecido. SQL Server informa
+`syntax: "passed_static_subset"`; não há validação pelo compilador nativo.
+O hash depende da representação contratual: não compare hashes entre versões
+como se fossem equivalentes.
+
+Antes de executar, um consumidor deve reautorizar dependências, conferir sua
+atualidade e aplicar limites próprios. PostgreSQL exige `search_path=pg_catalog`;
+SQL Server exige `QUOTED_IDENTIFIER`, `ANSI_NULLS`, `ANSI_WARNINGS` e `ARITHABORT`
+em `ON`. O artefato não concede permissão de execução.
+
+Após alterar o contrato, regenere os schemas com
+`.venv/bin/python -m atlas_sql_mcp.contracts schemas` e execute a [verificação](testing.md).

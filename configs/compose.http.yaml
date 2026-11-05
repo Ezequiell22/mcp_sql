@@ -1,4 +1,4 @@
-# Shared deployment behind a trusted HTTPS ingress; no unauthenticated MCP mode.
+# Server deployment behind an externally controlled HTTPS ingress; no MCP authentication.
 services:
   mcp:
     command: ["--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8091"]

@@ -11,8 +11,6 @@ import anyio
 import uvicorn
 from mcp import types
 from mcp.server import Server
-from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.settings import AuthSettings
 from mcp.server.stdio import stdio_server
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
@@ -25,9 +23,8 @@ from atlas_sql_mcp.application.connections import SessionCatalog
 from atlas_sql_mcp.application.service import INPUT_BYTES, SqlService
 from atlas_sql_mcp.config import allowed_connection_endpoints, load_connections, validate_public_url
 from atlas_sql_mcp.contracts import SCHEMAS
-from atlas_sql_mcp.domain import Principal, SqlError, canonical
+from atlas_sql_mcp.domain import Principal, canonical
 from atlas_sql_mcp.metadata.router import DialectCatalog
-from atlas_sql_mcp.transport.auth import JwtVerifier
 
 INSTRUCTIONS = """When the user supplies a database connection string, first call
 atlas_sql_connect with connectionString, then use the returned connectionId and
@@ -115,16 +112,7 @@ def build_server(service: SqlService, local_principal: Principal | None = None) 
         )
 
     async def call_tool(context, params):
-        principal = local_principal
-        if principal is None:
-            token = get_access_token()
-            if not token or not token.claims or "atlas:sql" not in token.scopes:
-                result = SqlError(
-                    "AUTHENTICATION_REQUIRED",
-                    "A verified bearer identity with atlas:sql scope is required.",
-                ).envelope()
-                return _result(result)
-            principal = Principal(token.claims["iss"], token.subject or token.claims["sub"])
+        principal = local_principal or Principal("shared", "anonymous")
         result = await anyio.to_thread.run_sync(
             service.call, params.name, params.arguments or {}, principal
         )
@@ -177,10 +165,7 @@ async def run_stdio(server, catalog):
 
 
 def build_http_app(service, *, host="127.0.0.1"):
-    issuer = validate_public_url(os.environ["ATLAS_SQL_ISSUER"])
-    jwks = validate_public_url(os.environ["ATLAS_SQL_JWKS_URL"])
-    # Match the SDK's URL canonicalization in advertised resource metadata,
-    # JWT audiences and Host validation (notably explicit :443 and host casing).
+    # Match the SDK's URL canonicalization for Host validation.
     public_url = str(AnyHttpUrl(validate_public_url(os.environ["ATLAS_SQL_PUBLIC_URL"]))).rstrip(
         "/"
     )
@@ -196,13 +181,6 @@ def build_http_app(service, *, host="127.0.0.1"):
         json_response=True,
         host=host,
         max_request_body_size=INPUT_BYTES,
-        auth=AuthSettings(
-            issuer_url=AnyHttpUrl(issuer),
-            resource_server_url=AnyHttpUrl(public_url),
-            required_scopes=["atlas:sql"],
-            validate_token_resource=True,
-        ),
-        token_verifier=JwtVerifier(issuer, jwks, public_url),
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
             allowed_hosts=[urlsplit(public_url).netloc],
@@ -248,7 +226,7 @@ def main() -> None:
         )
         if args.transport == "stdio":
             # The OS account is the configured local identity. No identity override
-            # switch and no unauthenticated local HTTP endpoint are exposed.
+            # switch is exposed for local stdio.
             anyio.run(
                 run_stdio,
                 build_server(service, Principal("local", getpass.getuser())),
@@ -270,7 +248,7 @@ def main() -> None:
     except (ValueError, KeyError, OSError, ImportError):
         parser.exit(
             2,
-            "Invalid operator configuration. Check connection grants and HTTPS authentication settings.\n",
+            "Invalid operator configuration. Check connection grants and HTTPS endpoint settings.\n",
         )
 
 

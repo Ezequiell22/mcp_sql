@@ -269,15 +269,18 @@ def test_request_budget_counts_utf8_bytes(service, principal):
     )
 
 
-def test_published_request_examples_match_wire_contract():
+def test_request_fixtures_match_wire_contract():
     from pathlib import Path
 
     from atlas_sql_mcp.contracts import validate
 
-    directory = Path(__file__).parents[1] / "examples"
+    directory = Path(__file__).parent / "fixtures" / "payloads"
     for tool, filename in [
+        ("atlas_sql_connect", "connect.json"),
         ("atlas_sql_context_get", "context.json"),
         ("atlas_sql_finalize", "finalize.json"),
+        ("atlas_sql_finalize", "finalize-neutral.json"),
+        ("atlas_sql_finalize", "finalize-sqlserver.json"),
     ]:
         validate(SCHEMAS[tool][0], json.loads((directory / filename).read_text()))
 

@@ -11,11 +11,3 @@ dist/
 .env.*
 *.pgpass
 connections.local.json
-
-# Private lab inputs and TLS material must remain outside source control.
-labs/**/connections.local.json
-labs/**/scenarios.local.json
-labs/**/*.key
-labs/**/*.bak
-labs/**/*.dmp
-labs/**/*.jar

@@ -14,7 +14,6 @@ dependencies = [
   "sqlglot==30.25.0",
   "psycopg[binary]==3.3.6",
   "jsonschema==4.26.0",
-  "PyJWT[crypto]==2.15.1",
   "uvicorn==0.54.0",
 ]
 

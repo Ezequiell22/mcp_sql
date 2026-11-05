@@ -232,7 +232,7 @@ def test_unknown_types_fail(datatype):
         normalize_type(datatype)
 
 
-def test_sqlserver_examples_are_executable_contracts(tsql_catalog):
+def test_sqlserver_fixtures_are_executable_contracts(tsql_catalog):
     import json
     from pathlib import Path
 
@@ -240,10 +240,10 @@ def test_sqlserver_examples_are_executable_contracts(tsql_catalog):
 
     root = Path(__file__).resolve().parents[1]
     assert (
-        load_connections(root / "configs/connections.example.json")["sales-sqlserver"].dialect
+        load_connections(root / "tests/fixtures/connections.json")["sales-sqlserver"].dialect
         == "sqlserver"
     )
-    request = json.loads((root / "examples/finalize-sqlserver.json").read_text())
+    request = json.loads((root / "tests/fixtures/payloads/finalize-sqlserver.json").read_text())
     validate(SCHEMAS["atlas_sql_finalize"][0], request)
     service = SqlService(MemoryCatalog(tsql_catalog), SqlServerAnalyzer())
     principal = Principal("local", "analyst")

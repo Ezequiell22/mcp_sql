@@ -202,9 +202,7 @@ def validate_public_url(value: str) -> str:
         or (parsed.port is not None and not 1 <= parsed.port <= 65535)
         or not _valid_host(parsed.hostname)
     ):
-        raise ValueError(
-            "Shared authentication endpoints require HTTPS without credentials, query, or fragment."
-        )
+        raise ValueError("Public endpoints require HTTPS without credentials, query, or fragment.")
     return value.rstrip("/")
 
 

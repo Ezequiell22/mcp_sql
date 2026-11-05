@@ -1,10 +1,9 @@
-"""Real Docker HTTPS ingress/JWKS → authenticated MCP → verified SQL Server TLS."""
+"""Real Docker HTTPS ingress → MCP without authentication → verified SQL Server TLS."""
 
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
 
-import jwt
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -21,11 +20,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
  def do_GET(self): self.handle_request()
  def do_POST(self): self.handle_request()
  def handle_request(self):
-  if self.path == '/jwks':
-   data = Path('/fixture/jwks.json').read_bytes()
-   self.send_response(200); self.send_header('Content-Type','application/json')
-   self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
-   return
   body = self.rfile.read(int(self.headers.get('Content-Length','0')))
   conn = http.client.HTTPConnection('mcp-shared',8091,timeout=30)
   conn.request(self.command,self.path,body,dict(self.headers))
@@ -56,10 +50,8 @@ async def run():
    except httpx.HTTPError: pass
    await asyncio.sleep(.25)
   else: raise RuntimeError('Isolated HTTPS ingress did not become ready')
-  assert (await client.post('https://reports:8443/mcp',json={})).status_code==401
   metadata=await client.get('https://reports:8443/.well-known/oauth-protected-resource/mcp')
-  assert metadata.status_code==200 and metadata.json()['resource']=='https://reports:8443/mcp'
-  client.headers['Authorization']='Bearer '+config['token']
+  assert metadata.status_code==404
   rejected=await client.post('https://reports:8443/mcp',json={},headers={'Origin':'https://untrusted.test'})
   assert rejected.status_code in (400,403,421)
   async with streamable_http_client('https://reports:8443/mcp',http_client=client) as (read,write):
@@ -74,10 +66,7 @@ async def run():
     result=(await session.call_tool('atlas_sql_finalize',proposal)).structured_content
     assert result['status']=='validated' and result['artifact']['sql']==query, result
     assert result['artifact']['validation']['executionPerformed'] is False
-    client.headers['Authorization']='Bearer '+config['otherToken']
-    denied=(await session.call_tool('atlas_sql_context_get',{'contractVersion':'1.2','connectionId':connected['connectionId'],'request':'Invoice totals'})).structured_content
-    assert denied['error']['code']=='CONNECTION_NOT_AUTHORIZED',denied
- print(json.dumps({'authenticatedDeployment':'passed','crossIdentityDenied':True}))
+ print(json.dumps({'httpDeployment':'passed'}))
 asyncio.run(run())
 """
 
@@ -88,12 +77,8 @@ def test_real_shared_http_deployment(live_sqlserver):
     folder.chmod(0o755)  # Allow the unprivileged disposable containers to read test-only files.
     suffix = secrets.token_hex(6)
     backend, ingress = f"atlas-http-{suffix}", f"atlas-ingress-{suffix}"
-    issuer, resource = "https://issuer:8443", "https://reports:8443/mcp"
+    resource = "https://reports:8443/mcp"
     now = datetime.now(UTC)
-    signing = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(signing.public_key()))
-    jwk.update(kid="fixture", use="sig", alg="RS256")
-    (folder / "jwks.json").write_text(json.dumps({"keys": [jwk]}))
     ca = x509.load_pem_x509_certificate((folder / "server.pem").read_bytes())
     ca_key = serialization.load_pem_private_key((folder / "server.key").read_bytes(), password=None)
     ingress_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -122,25 +107,9 @@ def test_real_shared_http_deployment(live_sqlserver):
         )
     )
 
-    def token(subject):
-        return jwt.encode(
-            {
-                "iss": issuer,
-                "aud": resource,
-                "sub": subject,
-                "scope": "atlas:sql",
-                "exp": now + timedelta(minutes=5),
-            },
-            signing,
-            algorithm="RS256",
-            headers={"kid": "fixture"},
-        )
-
     (folder / "client.json").write_text(
         json.dumps(
             {
-                "token": token("report-user"),
-                "otherToken": token("other-user"),
                 "connectionString": "Server=erp-sql;Database=erp;UID=erp_reader;PWD="
                 + fixture["password"],
             }
@@ -169,10 +138,6 @@ def test_real_shared_http_deployment(live_sqlserver):
             "--network-alias",
             "mcp-shared",
             *common,
-            "--env",
-            f"ATLAS_SQL_ISSUER={issuer}",
-            "--env",
-            f"ATLAS_SQL_JWKS_URL={issuer}/jwks",
             "--env",
             f"ATLAS_SQL_PUBLIC_URL={resource}",
             "--env",
@@ -204,7 +169,7 @@ def test_real_shared_http_deployment(live_sqlserver):
             "run", "--rm", *common, "--entrypoint", "python", fixture["image"], "/fixture/client.py"
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        assert json.loads(result.stdout)["authenticatedDeployment"] == "passed"
+        assert json.loads(result.stdout)["httpDeployment"] == "passed"
     finally:
         docker("rm", "--force", ingress)
         docker("rm", "--force", backend)

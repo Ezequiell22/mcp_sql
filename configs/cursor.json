@@ -1,12 +1,7 @@
 {
   "mcpServers": {
     "atlas_sql": {
-      "type": "stdio",
-      "command": "/absolute/path/mcp-sql/.venv/bin/atlas-sql-mcp",
-      "args": [
-        "--transport",
-        "stdio"
-      ]
+      "url": "https://sql-mcp.example.com/mcp"
     }
   }
 }

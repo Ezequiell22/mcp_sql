@@ -1,49 +1,30 @@
-# Register the MCP once
+# Conectar clientes
 
-These templates start the installed MCP over stdio. Replace `/absolute/path/mcp-sql`
-with the installation directory. No connection file, table list, business catalog,
-or model API key is required for this workflow: the chat assistant writes
-SQL using metadata discovered from the connection string.
+Substitua `https://sql-mcp.example.com/mcp` nos modelos pela URL HTTPS real do
+servidor. O endereço é um placeholder, não um serviço publicado.
 
-| Client | Template |
-| --- | --- |
-| Codex with local Python | [codex.toml](codex.toml) |
-| Codex with Docker | [codex-docker.toml](codex-docker.toml) |
-| Claude Code | [claude-code.json](claude-code.json) |
-| Cursor | [cursor.json](cursor.json) |
+| Cliente | Modelo | Destino |
+| --- | --- | --- |
+| Codex | [codex.toml](codex.toml) | `~/.codex/config.toml` |
+| Cursor | [cursor.json](cursor.json) | `.cursor/mcp.json` ou `~/.cursor/mcp.json` |
+| Claude Code | [claude-code.json](claude-code.json) | `.mcp.json` no projeto |
 
-Merge the `atlas_sql` entry into the client's MCP settings, preserve existing entries,
-and reload its server list. For container deployment, follow the [Docker guide](../docs/docker.md). These files are templates, not proof of manual
-acceptance in every client version.
+Adicione somente a entrada `atlas_sql`, preservando os outros servidores e
+ajustes. Os clientes não carregam automaticamente os arquivos desta pasta.
+Recarregue o cliente e confirme a presença de `atlas_sql_connect`,
+`atlas_sql_context_get` e `atlas_sql_finalize`.
 
-Users then provide a [connection string](../docs/connection-strings.md) and a request,
-such as “Create SQL for monthly revenue, grouped by region, excluding canceled orders.”
-The assistant connects, discovers accessible tables and columns, asks about ambiguous
-business definitions, and validates its SQL. It returns SQL and typed filters; it does
-not execute reports or read business records.
+O cliente usa seu próprio LLM; não precisa instalar drivers de banco ou configurar
+provedor de IA no MCP. Informe uma connection string com usuário restrito à
+leitura e descreva a consulta desejada. Não armazene senhas nestes modelos.
 
-SQL Server additionally needs its optional dependencies and Microsoft ODBC Driver 18;
-see the [SQL Server guide](../docs/sqlserver-support.md). Certificate trust belongs to
-administrator setup. Avoid storing connection strings in client configuration files.
+O servidor não possui autenticação própria; o acesso é controlado externamente.
+Todos os clientes HTTP compartilham a identidade `shared#anonymous`, conexões e
+contextos. A configuração do cliente não cria isolamento por usuário.
 
-## Optional operator-managed policy
+Para falhas de conexão, confira URL `/mcp`, DNS, rede e confiança no certificado
+HTTPS. A lista de bancos permitidos e suas CAs são configuração do servidor.
+O registro do cliente não comprova conectividade com seu ambiente.
 
-[connections.example.json](connections.example.json) illustrates the separate
-`--connections /private/path/connections.json` compatibility mode. Its table names,
-connection IDs and principal names are placeholders, not built-in customer knowledge.
-This mode uses explicit column grants and external password references; it is unnecessary
-when users supply connection strings. Keep populated files private and outside version
-control. Local grant identities must match the actual OS account (`local#username`).
-The server never creates these example databases or objects.
-
-For the persistent local Docker container, use [the Docker Codex template](codex-docker.toml) and [persistent-container setup](../docs/docker.md#keep-a-local-container-running).
-
-## Transport configuration
-
-Local stdio uses the root Compose definition. The connected agent supplies the
-LLM in every transport; the MCP has no model settings or provider credentials.
-
-[compose.http.yaml](compose.http.yaml) enables shared authenticated HTTP using
-`ATLAS_SQL_HTTP_ENV_FILE`, a private file for issuer, signing-key endpoint, public
-URL and allowed database endpoints. It adds a local backend port and health probe.
-Use the commands and environment reference in the [Docker guide](../docs/docker.md).
+[compose.http.yaml](compose.http.yaml) é um override de implantação do servidor;
+veja [Docker](../docs/docker.md) e [configuração](../docs/configuration.md).

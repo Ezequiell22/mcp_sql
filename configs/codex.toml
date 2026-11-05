@@ -1,8 +1,5 @@
-# Merge this section into your Codex MCP configuration.
-# Replace the executable path after installation; users supply connection strings in chat.
+# Replace this example URL with the public production MCP URL.
 [mcp_servers.atlas_sql]
-command = "/absolute/path/mcp-sql/.venv/bin/atlas-sql-mcp"
-args = ["--transport", "stdio"]
-env_vars = ["PGSSLROOTCERT", "SSL_CERT_FILE"]
+url = "https://sql-mcp.example.com/mcp"
 startup_timeout_sec = 20
 tool_timeout_sec = 120

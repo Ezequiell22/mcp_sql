@@ -1,138 +1,39 @@
 import asyncio
 import getpass
 import sys
-from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
 import httpx2 as httpx
-import jwt
 import pytest
 from conftest import args_for
-from cryptography.hazmat.primitives.asymmetric import rsa
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.server.auth.settings import AuthSettings
-from mcp.server.transport_security import TransportSecuritySettings
 from test_connections import session_reader as session_reader
 
-from atlas_sql_mcp.transport.auth import JwtVerifier
-from atlas_sql_mcp.transport.server import build_http_app, build_server, catalog_lifecycle
+from atlas_sql_mcp.transport.server import build_http_app, catalog_lifecycle
 
-ISSUER = "https://identity.example.test"
 RESOURCE = "https://sql.example.test/mcp"
 
 
-@pytest.fixture(scope="module")
-def signing_key():
-    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-
-def token(key, **updates):
-    now = datetime.now(UTC)
-    claims = {
-        "iss": ISSUER,
-        "sub": "analyst",
-        "aud": RESOURCE,
-        "exp": now + timedelta(minutes=5),
-        "scope": "atlas:sql",
-    }
-    claims.update(updates)
-    return jwt.encode(claims, key, algorithm="RS256", headers={"kid": "test-key"})
-
-
-def verifier(key):
-    result = JwtVerifier(ISSUER, "https://identity.example.test/jwks", RESOURCE)
-    result.jwks = SimpleNamespace(
-        get_signing_key_from_jwt=lambda _: SimpleNamespace(key=key.public_key())
-    )
-    return result
-
-
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"iss": "https://wrong.example.test"},
-        {"aud": "another-resource"},
-        {"exp": 1},
-        {"sub": ""},
-        {"scope": ["atlas:sql"]},
-        {"exp": float("inf")},
-    ],
-)
-def test_invalid_signed_tokens(signing_key, changes):
-    assert asyncio.run(verifier(signing_key).verify_token(token(signing_key, **changes))) is None
-
-
-def test_valid_token(signing_key):
-    verified = asyncio.run(verifier(signing_key).verify_token(token(signing_key)))
-    assert verified.subject == "analyst"
-    assert verified.resource == RESOURCE
-    assert verified.scopes == ["atlas:sql"]
-
-
-def test_different_signing_key_rejected(signing_key):
-    another_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    assert asyncio.run(verifier(signing_key).verify_token(token(another_key))) is None
-
-
-def test_unsigned_token_rejected(signing_key):
-    unsigned = jwt.encode(
-        {"sub": "analyst", "iss": ISSUER, "aud": RESOURCE, "exp": 9999999999},
-        key="",
-        algorithm="none",
-    )
-    assert asyncio.run(verifier(signing_key).verify_token(unsigned)) is None
-
-
 @pytest.mark.parametrize("contract_version", ["1.0", "1.2"])
-def test_shared_http_complete_flow_and_authentication(service, signing_key, contract_version):
+def test_shared_http_without_authentication(service, monkeypatch, contract_version):
+    monkeypatch.setenv("ATLAS_SQL_PUBLIC_URL", RESOURCE)
+    monkeypatch.delenv("ATLAS_SQL_ISSUER", raising=False)
+    monkeypatch.delenv("ATLAS_SQL_JWKS_URL", raising=False)
+
     async def run():
-        server = build_server(service)
-        app = server.streamable_http_app(
-            stateless_http=True,
-            json_response=True,
-            auth=AuthSettings(
-                issuer_url=ISSUER,
-                resource_server_url=RESOURCE,
-                required_scopes=["atlas:sql"],
-                validate_token_resource=True,
-            ),
-            token_verifier=verifier(signing_key),
-            max_request_body_size=512 * 1024,
-            transport_security=TransportSecuritySettings(
-                enable_dns_rebinding_protection=True,
-                allowed_hosts=["sql.example.test"],
-                allowed_origins=[],
-            ),
-        )
+        app = build_http_app(service)
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="https://sql.example.test"
             ) as client:
-                assert (await client.post("/mcp", json={})).status_code == 401
-                no_scope = await client.post(
-                    "/mcp",
-                    json={},
-                    headers={"Authorization": "Bearer " + token(signing_key, scope="other")},
-                )
-                assert no_scope.status_code == 403
-                discovery = await client.get("/.well-known/oauth-protected-resource/mcp")
-                assert discovery.status_code == 200
-                assert discovery.json()["resource"] == RESOURCE
-                client.headers["Authorization"] = "Bearer " + token(signing_key)
+                assert (await client.get("/healthz")).status_code == 200
+                assert (
+                    await client.get("/.well-known/oauth-protected-resource/mcp")
+                ).status_code == 404
                 async with streamable_http_client(RESOURCE, http_client=client) as streams:
                     async with ClientSession(streams[0], streams[1]) as session:
                         await session.initialize()
-                        tools = (await session.list_tools()).tools
-                        assert {t.name for t in tools} == {
-                            "atlas_sql_context_get",
-                            "atlas_sql_finalize",
-                        }
-                        assert all(
-                            t.input_schema["additionalProperties"] is False and t.output_schema
-                            for t in tools
-                        )
                         ctx = await session.call_tool(
                             "atlas_sql_context_get",
                             {
@@ -141,12 +42,15 @@ def test_shared_http_complete_flow_and_authentication(service, signing_key, cont
                                 "request": "Orders",
                             },
                         )
-                        assert not ctx.is_error
-                        ctx_id = ctx.structured_content["contextId"]
+                        assert not ctx.is_error, ctx
                         result = await session.call_tool(
                             "atlas_sql_finalize",
                             {
-                                **args_for("SELECT id FROM public.orders", ["id"], ctx_id),
+                                **args_for(
+                                    "SELECT id FROM public.orders",
+                                    ["id"],
+                                    ctx.structured_content["contextId"],
+                                ),
                                 "contractVersion": contract_version,
                             },
                         )
@@ -157,59 +61,10 @@ def test_shared_http_complete_flow_and_authentication(service, signing_key, cont
                             ]
                             is False
                         )
-                        client.headers["Authorization"] = "Bearer " + token(
-                            signing_key, sub="another-user"
-                        )
-                        forbidden = await session.call_tool(
-                            "atlas_sql_finalize",
-                            {
-                                **args_for("SELECT id FROM public.orders", ["id"], ctx_id),
-                                "contractVersion": contract_version,
-                            },
-                        )
-                        assert forbidden.is_error
-                        assert forbidden.structured_content["error"]["code"] == "CONTEXT_EXPIRED"
-
-    asyncio.run(run())
-
-
-@pytest.mark.parametrize("public_url", [RESOURCE, "https://SQL.EXAMPLE.TEST:443/mcp"])
-def test_runtime_http_health_auth_host_and_origin_policy(
-    service, signing_key, monkeypatch, public_url
-):
-    from atlas_sql_mcp.transport import server as transport
-
-    monkeypatch.setenv("ATLAS_SQL_ISSUER", ISSUER)
-    monkeypatch.setenv("ATLAS_SQL_JWKS_URL", ISSUER + "/jwks")
-    monkeypatch.setenv("ATLAS_SQL_PUBLIC_URL", public_url)
-
-    def configured_verifier(issuer, jwks, resource):
-        assert resource == RESOURCE
-        return verifier(signing_key)
-
-    monkeypatch.setattr(transport, "JwtVerifier", configured_verifier)
-
-    async def run():
-        app = build_http_app(service)
-        async with app.router.lifespan_context(app):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="https://sql.example.test"
-            ) as client:
-                health = await client.get("/healthz")
-                assert health.status_code == 200 and health.text == "ok\n"
-                assert health.headers["cache-control"] == "no-store"
-                assert (await client.post("/mcp", json={})).status_code == 401
-                metadata = await client.get("/.well-known/oauth-protected-resource/mcp")
-                assert metadata.json()["resource"] == RESOURCE
-                auth = {"Authorization": "Bearer " + token(signing_key)}
-                client.headers.update(auth)
-                async with streamable_http_client(RESOURCE, http_client=client) as streams:
-                    async with ClientSession(streams[0], streams[1]) as session:
-                        await session.initialize()
-                for headers in [
-                    {**auth, "Host": "untrusted.example.test"},
-                    {**auth, "Origin": "https://untrusted.example.test"},
-                ]:
+                for headers in (
+                    {"Host": "untrusted.example.test"},
+                    {"Origin": "https://untrusted.example.test"},
+                ):
                     assert (await client.post("/mcp", json={}, headers=headers)).status_code in {
                         400,
                         403,

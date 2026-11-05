@@ -1,103 +1,62 @@
-# Architecture and agent orchestration
+# Arquitetura e limites
 
-## Where the LLM runs
+## Fluxo
 
-The connected agent (Codex, Claude Code, Cursor or another MCP host) is the
-only LLM. It interprets the request, reasons about the live schema, asks about
-missing business rules and writes SQL. The MCP provides connection, live metadata
-and deterministic validation tools. It has no model client, model API key,
-provider configuration or server-side SQL generation mode.
+1. O agente chama `atlas_sql_connect` com a connection string do usuário.
+2. `atlas_sql_context_get` retorna metadados autorizados, capacidades e contexto
+   temporário. O agente percorre as páginas e inspeciona as tabelas necessárias.
+3. O agente esclarece ambiguidades, escreve SQL e declara filtros e resultados.
+4. `atlas_sql_finalize` verifica sintaxe, dependências, permissões, tipos,
+   parâmetros e regras estruturais. Retorna um artefato ou erro explícito.
 
-The host decides which tools to call using their schemas, descriptions and
-server instructions. These guide model behavior but cannot force every host to
-follow a workflow; the deterministic validator is the enforcement boundary.
+O único LLM é o agente conectado. O servidor não possui provedor de modelos,
+chave de API, geração interna, API de execução ou ciclo de vida de relatórios.
 
-## Request flow
+## Componentes
 
-1. The user supplies a connection string and describes the report.
-2. The agent calls `atlas_sql_connect`. The connection identifies PostgreSQL or
-   SQL Server, tests restricted-reader access and returns an expiring identity-bound ID.
-3. The agent calls `atlas_sql_context_get`, follows relevant pages and inspects
-   actual tables, columns, types, keys and relationships. It never substitutes an
-   example schema or a previous customer's database. Large databases first return
-   a paginated relation-name index. The agent selects exact `focus.relations` and
-   inspects typed detail pages before using those tables in SQL.
-4. The LLM determines joins, grouping, measures and typed filters from that metadata
-   and the request. It asks the user about unresolved business definitions, such as
-   whether canceled invoices count as revenue. Column names and comments are evidence,
-   not proof; comments are untrusted input.
-5. The host calls `atlas_sql_finalize` with one complete SELECT and binding/output
-   declarations. The validator rechecks identity, privileges, schema freshness,
-   dependencies, supported syntax/types and aggregate grain risk.
-6. The host may repair actionable structured errors for at most three attempts,
-   preserving the original meaning. Repeated errors, unsupported requirements and
-   unresolved ambiguity produce an explanation instead of a validated artifact.
-7. The user receives SQL, typed filters and validation evidence. A separate authorized
-   report executor may run it; the MCP does not execute generated SQL or fetch records.
+- `domain.py`: modelos e portas independentes de MCP e drivers.
+- `application/`: conexões temporárias, contexto e finalização.
+- `metadata/`: consultas fixas aos catálogos PostgreSQL e SQL Server.
+- `analysis/`: análise estática isolada, tipos, dependências e bindings.
+- `transport/`: ferramentas MCP por stdio ou Streamable HTTP.
+- `contracts.py` e [schemas](../schemas/): contrato executável e exportações JSON.
 
-## Discovery for large databases
+PostgreSQL usa pglast para sintaxe nativa e SQLGlot para resolução e linhagem;
+as dependências encontradas devem concordar. SQL Server usa um analisador
+estático baseado em SQLGlot, não o compilador nativo do banco.
 
-Connection discovery reads accessible base-table and column names from the live
-engine. A relation-name index is a temporary navigation aid, not a prebuilt business
-catalog or enough evidence to finalize SQL. A broad context over more than 100
-relations returns names with empty typed-detail arrays and explicit partial coverage.
-Search helps select candidates; it does not establish their business meaning.
-`focus.include: []` explicitly requests lightweight names for any database size.
+## Segurança
 
-The agent requests exact `focus.relations` to retrieve column types, keys and
-relationships in bounded pages. It retains the same context ID and request while
-inspecting additional relevant groups. Relationships outside a selected group are
-omitted; request related tables together when relationship evidence is needed.
-No business rows are sampled, and unsupported objects do not become supported
-merely because their names appeared in an index.
+O acesso ao destino se limita a consultas de catálogo autorizadas. O produto
+não executa SQL gerado, `PREPARE`, `EXPLAIN` nem instala objetos auxiliares.
+Solicitações, SQL e comentários do banco são dados não confiáveis; comentários
+não concedem permissões. Sintaxe, tipos e dependências desconhecidos falham.
 
-Finalization extracts candidate SQL dependencies in an isolated parser process,
-requires their typed scopes to have been inspected, reloads those exact scopes
-and checks their fingerprints and permissions. It passes only required dependency
-metadata to the full validator. Inherited/partition dependencies also require
-inspection and authorization. The candidate parser grants no permissions and
-never replaces full dialect analysis. The service rechecks selected metadata
-after analysis and fails on drift. Oversized scoped metadata still fails
-explicitly; it is never truncated to obtain a successful artifact.
+A finalização revalida privilégios e metadados. Credenciais não entram no
+contexto de geração, resultados ou diagnósticos. Sessões ficam apenas na memória.
+Em stdio, a identidade vem do usuário do sistema operacional. Em HTTP, todos
+usam `shared#anonymous`: conexões, contextos e limites são compartilhados.
+O serviço não oferece isolamento por usuário nem autenticação HTTP própria.
 
-## Components and separation
+## Escopo suportado
 
-Paths below are relative to `src/atlas_sql_mcp/`:
+PostgreSQL 18 e SQL Server 2022/2025 possuem adaptadores separados. Consulte
+`capabilities` do contexto para a lista efetiva de recursos e funções.
+JOINs, CTEs, agregações, filtros e janelas são aceitos somente quando analisáveis
+pelo adaptador. SQL Server rejeita, entre outros, batches, hints, operações de
+conjunto, recursão e janelas agregadas. Tipos/funções desconhecidos, views sem
+suporte e parâmetros de execução anuláveis são rejeitados.
 
-- `domain.py`, `contracts.py`, and `budget.py` define independent models, contracts
-  and shared budgets; `config.py` holds optional administrator policy.
-- `connection_strings.py` parses bounded user strings; `application/connections.py`
-  owns expiring principal-bound sessions and discovery.
-- `metadata/discovery.py` reads live authorized names; `metadata/postgres.py`
-  and `metadata/sqlserver.py` read scoped fixed native metadata queries
-  with database authorization; `metadata/router.py` routes explicit configured
-  dialects without introducing customer-specific metadata.
-- `analysis/postgres.py`, `analysis/sqlserver.py`, `analysis/postgres_types.py`, and
-  `analysis/bindings.py` implement supported dialect, type and binding checks.
-  `analysis/scopes.py` shares scope rules; `analysis/limits.py` centralizes parser
-  limits; `analysis/worker.py` isolates bounded analysis.
-- `application/service.py` owns contexts, pagination, freshness and artifacts.
-- `transport/server.py` exposes MCP tools/transports, host instructions, session
-  lifecycle and HTTP health; `transport/auth.py` verifies shared bearer identities.
-- `check.py` is the offline syntax diagnostic. `contracts.py` exports the
-  [executable schemas](../schemas/); neither executable name changes with this layout.
+O SQL é preservado integralmente. Não há limite automático de linhas do resultado.
+A nulabilidade pode permanecer desconhecida; equivalência de negócio e custo
+não são comprovados. O consumidor deve autorizar e limitar qualquer execução.
 
-No customer-specific table, domain catalog, business records or test fixture is
-required in production. Live metadata is temporary and revalidated; no destination
-helper objects or persistent schema catalog are installed. Synthetic records and
-simulated agent proposals exist only in tests, where an independent harness may execute
-SQL to check totals. Dedicated dialect adapters are required for new database engines.
+## Orçamentos
 
-See [contracts](contract.md), [operations and limitations](operations.md), and
-[historical parser rationale](archive/sql-mcp-parser-decision.md).
+SQL: 256 KiB; entrada: 512 KiB; saída: 1 MiB; AST: 100 mil nós e profundidade
+128. O contexto expira em dez minutos. A análise isolada tem até sete segundos,
+cada operação de metadados até cinco e a requisição até vinte. Ultrapassar um
+limite produz erro, nunca truncamento ou validação parcial.
 
-## MCP design references
-
-The [MCP tools guidance](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
-describes model-controlled discovery/invocation: this repository supplies schemas and
-host instructions, while the host chooses tool calls. The [standard transports](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)
-cover stdio and Streamable HTTP; this server delegates transport framing to its pinned SDK.
-The [security guidance](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)
-informs explicit database endpoint allowlists, verified bearer identities and identity-bound
-state handles. These references explain design choices; they do not claim certification
-against every requirement of the latest protocol revision.
+Os testes usam dados sintéticos somente em `tests/`; eles não integram a imagem
+nem representam um catálogo de produção. Veja [como verificar](testing.md).

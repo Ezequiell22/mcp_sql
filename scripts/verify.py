@@ -1,4 +1,4 @@
-"""Verify source, docs, examples, schemas and regression checks from one entry point."""
+"""Verify source, docs, fixtures, schemas and regression checks from one entry point."""
 
 import argparse
 import ast
@@ -18,11 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def check_documents():
     documents = [ROOT / "README.md", ROOT / "AGENTS.md"]
-    documents += [
-        p
-        for folder in ("docs", "configs", "examples", "labs")
-        for p in (ROOT / folder).rglob("*.md")
-    ]
+    documents += [p for folder in ("docs", "configs") for p in (ROOT / folder).rglob("*.md")]
     for document in documents:
         for raw in re.findall(r"\[[^\]]*\]\(([^\s)]+)\)", document.read_text()):
             url = urlsplit(raw)
@@ -50,19 +46,17 @@ def main():
     options = parser.parse_args()
     if options.checks_only and options.integration:
         parser.error("--checks-only and --integration are mutually exclusive")
-    paths = [
-        p for folder in ("src", "tests", "scripts", "labs") for p in (ROOT / folder).rglob("*.py")
-    ]
+    paths = [p for folder in ("src", "tests", "scripts") for p in (ROOT / folder).rglob("*.py")]
     for path in paths:
         ast.parse(path.read_text(), filename=str(path))
     print(f"Python syntax: {len(paths)} files passed", flush=True)
     check_documents()
-    checked_folders = ["src", "tests", "scripts", "labs"]
+    checked_folders = ["src", "tests", "scripts"]
     subprocess.run([sys.executable, "-m", "ruff", "check", *checked_folders], cwd=ROOT, check=True)
     subprocess.run(
         [sys.executable, "-m", "ruff", "format", "--check", *checked_folders], cwd=ROOT, check=True
     )
-    for folder in ("configs", "examples", "schemas", "labs"):
+    for folder in ("configs", "schemas", "tests/fixtures"):
         for path in (ROOT / folder).rglob("*.json"):
             json.loads(path.read_text())
         for path in (ROOT / folder).rglob("*.toml"):
