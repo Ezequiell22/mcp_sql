@@ -61,3 +61,16 @@ class ContextStore:
                 "CONTEXT_EXPIRED", "Context is unavailable or expired. Request fresh context."
             )
         return context
+
+    def cursor(self, key: str, context_id: str, focus_hash: str, principal: Principal) -> Cursor:
+        with self.lock:
+            cursor = self.cursors.get(key)
+        if (
+            not cursor
+            or cursor.principal != principal
+            or cursor.context_id != context_id
+            or cursor.focus_hash != focus_hash
+            or cursor.expires <= self.clock()
+        ):
+            raise SqlError("CONTEXT_EXPIRED", "Cursor is unavailable for this context and focus.")
+        return cursor

@@ -6,7 +6,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from atlas_sql_mcp.budget import METADATA_SECONDS, remaining
+from atlas_sql_mcp.budget import METADATA_SECONDS, remaining, request_budget
 from atlas_sql_mcp.config import Connection, load_connections
 from atlas_sql_mcp.domain import Catalog, Column, Constraint, Principal, Relation, SqlError
 
@@ -120,6 +120,7 @@ class SqlServerCatalog:
     def __init__(self, connections: dict[str, Connection] | Path):
         self.connections = connections
 
+    @request_budget(METADATA_SECONDS)
     def load(self, principal: Principal, connection_id: str, relations=None) -> Catalog:
         try:
             configs = (
@@ -282,6 +283,7 @@ class SqlServerCatalog:
         except SqlError:
             raise
         except pyodbc.Error:
+            remaining(METADATA_SECONDS)
             raise SqlError(
                 "CONNECTION_UNAVAILABLE", "Authorized metadata could not be read.", retryable=True
             ) from None

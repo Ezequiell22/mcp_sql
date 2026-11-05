@@ -23,3 +23,27 @@ exported schemas, documentation links, formatting and git diff whitespace checks
 passed. PostgreSQL-enabled verification: 577 passed, 18 skipped. SQL Server and
 Docker-image workflows were not run: explicit Microsoft license acceptance is
 required. These results are local checks, not production certification.
+
+
+## Pass 2 — scalability and deadline review
+
+Findings corrected:
+
+- Focused lists larger than one page still rediscovered the whole index. Exact-name
+  continuation pages now authorize/load only their current page. Cursor ownership,
+  expiry and focus binding are validated before a database is opened. Regressions
+  verify page scopes and rejection after a selected grant is revoked.
+- Finalization launched two identical dependency workers. It now extracts the
+  immutable SQL dependencies once, while independently refreshing catalog data
+  before and after full analysis.
+- Some five-second catalog budgets restarted after connecting. Nested deadlines
+  now preserve the shorter outer deadline, and all three catalog entry points
+  include connection time. Expired driver errors map to VALIDATION_TIMEOUT rather
+  than an authentication/availability error. Fake-clock regressions verify this.
+- PostgreSQL comments were limited only after transfer. Fixed catalog SQL now
+  applies the existing 4096-character limit before materializing descriptions.
+
+Verification on 2026-11-05: 473 isolated tests passed, 125 skipped; PostgreSQL-enabled
+suite: 580 passed, 18 skipped. Static checks, schemas, documentation and whitespace
+checks passed. The remaining SQL Server/image workflows still require explicit
+license acceptance and were not executed locally.

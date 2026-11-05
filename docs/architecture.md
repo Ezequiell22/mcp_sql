@@ -55,7 +55,7 @@ não são comprovados. O consumidor deve autorizar e limitar qualquer execução
 
 SQL: 256 KiB; entrada: 512 KiB; saída: 1 MiB; AST: 100 mil nós e profundidade
 128. O contexto expira em dez minutos. A análise isolada tem até sete segundos,
-cada operação de metadados até cinco e a requisição até vinte. Ultrapassar um
+cada operação de metadados até cinco (incluindo conexão) e a requisição até vinte. Ultrapassar um
 limite produz erro, nunca truncamento ou validação parcial.
 
 Os testes usam dados sintéticos somente em `tests/`; eles não integram a imagem
@@ -70,10 +70,11 @@ correlação, ferramenta conhecida, duração e resultado (`success`, `rejected`
 Não são registrados argumentos, SQL, nomes do banco, identidades, mensagens de
 exceção ou credenciais. O coletor externo pode agregar latência, falhas e timeouts.
 
-Continuações focadas que cabem em uma página consultam somente as tabelas
-solicitadas, com revalidação de grants e fingerprints dos detalhes. Páginas amplas
+Continuações focadas por nomes exatos consultam somente as tabelas da página
+solicitada, com revalidação de grants e fingerprints dos detalhes. Páginas amplas
 continuam usando um índice vivo; não há cache que possa expor grants revogados.
-A finalização mantém as duas verificações de metadados e privilégios. A extração
+A finalização mantém as duas verificações de metadados e privilégios, reutilizando
+a extração determinística de dependências da mesma instrução SQL. A extração
 de dependências usa a porta do analisador injetado, isolada em processo no produto.
 
 Para clientes independentes, aplique o [isolamento por implantação](docker.md).

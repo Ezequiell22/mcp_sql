@@ -7,7 +7,7 @@ from pathlib import Path
 
 import psycopg
 
-from atlas_sql_mcp.budget import METADATA_SECONDS, remaining
+from atlas_sql_mcp.budget import METADATA_SECONDS, remaining, request_budget
 from atlas_sql_mcp.config import Connection, load_connections
 from atlas_sql_mcp.domain import Catalog, Column, Constraint, Principal, Relation, SqlError
 
@@ -15,7 +15,7 @@ from atlas_sql_mcp.domain import Catalog, Column, Constraint, Principal, Relatio
 # participating columns and the referenced relation are authorized.
 IDENTITY_SQL = "SELECT current_setting('server_version_num')::integer, rolsuper, rolbypassrls FROM pg_catalog.pg_roles WHERE rolname=current_user"
 RELATION_SQL = """
-SELECT c.oid, c.relkind, pg_catalog.obj_description(c.oid, 'pg_class'),
+SELECT c.oid, c.relkind, pg_catalog.left(pg_catalog.obj_description(c.oid, 'pg_class'),4096),
        pg_catalog.has_table_privilege(c.oid, 'SELECT')
 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
 WHERE n.nspname=%s AND c.relname=%s AND c.relkind IN ('r','p','v','m')
@@ -23,7 +23,7 @@ WHERE n.nspname=%s AND c.relname=%s AND c.relkind IN ('r','p','v','m')
 """
 COLUMN_SQL = """
 SELECT a.attname, pg_catalog.format_type(a.atttypid,a.atttypmod), NOT a.attnotnull,
-       pg_catalog.col_description(a.attrelid,a.attnum), tn.nspname,
+       pg_catalog.left(pg_catalog.col_description(a.attrelid,a.attnum),4096), tn.nspname,
        pg_catalog.has_column_privilege(a.attrelid,a.attnum,'SELECT')
 FROM pg_catalog.pg_attribute a
 JOIN pg_catalog.pg_type t ON t.oid=a.atttypid
@@ -58,6 +58,7 @@ class PostgresCatalog:
     def __init__(self, connections: dict[str, Connection] | Path):
         self.connections = connections
 
+    @request_budget(METADATA_SECONDS)
     def load(self, principal: Principal, connection_id: str, relations=None) -> Catalog:
         try:
             connections = (
@@ -194,6 +195,7 @@ class PostgresCatalog:
         except SqlError:
             raise
         except psycopg.Error:
+            remaining(METADATA_SECONDS)
             raise SqlError(
                 "CONNECTION_UNAVAILABLE", "Authorized metadata could not be read.", retryable=True
             ) from None

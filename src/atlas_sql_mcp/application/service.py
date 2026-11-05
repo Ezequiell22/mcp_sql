@@ -171,9 +171,8 @@ class SqlService:
             )
         return catalog
 
-    def _scoped_fresh(self, context: Context, sql: str, principal: Principal) -> Catalog:
+    def _scoped_fresh(self, context: Context, candidates: dict, principal: Principal) -> Catalog:
         """Recheck only inspected groups needed by SQL, then project parser input."""
-        candidates = self.analyzer.dependencies(sql, context.dialect)
         names = set(candidates["relations"])
         inherited = set(candidates["inheritedRelations"])
         with self.state.lock:
@@ -257,6 +256,14 @@ class SqlService:
         focused = focus.get("relations", [])
         page_size = args.get("pageSize", 25)
         focused_details = None
+        focus_hash = digest([focus, page_size])
+        offset = 0
+        if args.get("cursor"):
+            if not key:
+                raise SqlError("INVALID_CONTRACT", "A cursor requires its original contextId.")
+            cursor = self.state.cursor(args["cursor"], key, focus_hash, principal)
+            offset = cursor.offset
+        scoped_page = bool(key and focused and not focus.get("search"))
         if key:
             context = self.state.get(key, principal)
             if context.connection_id != args["connectionId"] or context.request_hash != digest(
@@ -265,15 +272,11 @@ class SqlService:
                 raise SqlError(
                     "CONTEXT_STALE", "Context is bound to another request or connection."
                 )
-            if (
-                context.indexed
-                and focused
-                and len(focused) <= page_size
-                and not args.get("cursor")
-                and not focus.get("search")
-            ):
+            if context.indexed and focused and scoped_page:
                 catalog = self.catalog.load(
-                    principal, context.connection_id, relations=tuple(sorted(focused))
+                    principal,
+                    context.connection_id,
+                    relations=tuple(sorted(focused)[offset : offset + page_size]),
                 )
                 if self._policy(catalog) != context.policy_version:
                     raise SqlError(
@@ -310,28 +313,13 @@ class SqlService:
                     )
                 self.state.contexts[key] = context
         validate_contract_version(args, catalog)
-        focus = args.get("focus", {})
-        page_size = args.get("pageSize", 25)
-        focus_hash = digest([focus, page_size])
-        offset = 0
-        if args.get("cursor"):
-            with self.state.lock:
-                cursor = self.state.cursors.get(args["cursor"])
-            if (
-                not cursor
-                or cursor.principal != principal
-                or cursor.context_id != key
-                or cursor.focus_hash != focus_hash
-                or cursor.expires <= now
-            ):
-                raise SqlError(
-                    "CONTEXT_EXPIRED", "Cursor is unavailable for this context and focus."
-                )
-            offset = cursor.offset
         relations = list(catalog.relations)
         if focus.get("relations"):
             requested = set(focus["relations"])
-            if not requested <= catalog.relation_map.keys():
+            expected_page = (
+                set(sorted(focused)[offset : offset + page_size]) if focused_details else requested
+            )
+            if not expected_page <= catalog.relation_map.keys():
                 raise SqlError(
                     "OBJECT_NOT_AUTHORIZED", "Requested metadata is unavailable for this identity."
                 )
@@ -347,7 +335,7 @@ class SqlService:
                 )
             ]
         includes = set(focus.get("include", ["columns", "relationships", "businessDefinitions"]))
-        page = relations[offset : offset + page_size]
+        page = relations if focused_details else relations[offset : offset + page_size]
         index_only = context.indexed and (
             not includes.intersection({"columns", "relationships"})
             or (len(catalog.relations) > 100 and not focus.get("relations"))
@@ -377,7 +365,8 @@ class SqlService:
             details_by_key = details.relation_map
             page = [details_by_key[r.key] for r in page]
         next_cursor = None
-        if offset + len(page) < len(relations):
+        total_relations = len(focused) if focused_details else len(relations)
+        if offset + len(page) < total_relations:
             with self.state.lock:
                 if len(self.state.cursors) >= 5000:
                     raise SqlError("RATE_LIMITED", "Cursor storage budget reached.", retryable=True)
@@ -475,8 +464,11 @@ class SqlService:
     def finalize(self, args: dict, principal: Principal) -> dict:
         context = self.state.get(args["contextId"], principal)
         deadline = time.monotonic() + REQUEST_SECONDS
+        candidates = (
+            self.analyzer.dependencies(args["sql"], context.dialect) if context.indexed else None
+        )
         catalog = (
-            self._scoped_fresh(context, args["sql"], principal)
+            self._scoped_fresh(context, candidates, principal)
             if context.indexed
             else self._fresh(context, principal)
         )
@@ -569,7 +561,7 @@ class SqlService:
             )
         # Catch changes while analysis was in progress; no stale success is issued.
         if context.indexed:
-            refreshed = self._scoped_fresh(context, args["sql"], principal)
+            refreshed = self._scoped_fresh(context, candidates, principal)
             if refreshed.fingerprint != catalog.fingerprint:
                 raise SqlError("CONTEXT_STALE", "Selected metadata changed during validation.")
         else:

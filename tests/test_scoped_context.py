@@ -302,5 +302,54 @@ def test_focused_continuation_skips_full_index_and_uses_injected_dependencies(la
     service.analyzer = InjectedAnalyzer()
     result = finalize(service, principal, indexed["contextId"])
     assert result["status"] == "validated", result
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert all(dialect == "postgresql" for _, dialect in calls)
+
+
+def test_focused_cursor_reads_only_the_next_page_and_rechecks_authorization(large):
+    from atlas_sql_mcp.domain import SqlError
+
+    adapter, service, principal = large
+    first = context(service, principal, focus={"include": []})
+    names = ["erp.table_0000", "erp.table_1498", "erp.table_1499"]
+    focus = {"relations": names}
+
+    def no_index(*args):
+        raise AssertionError("Exact-name pagination must not rediscover unrelated tables")
+
+    adapter.index = no_index
+    page = context(service, principal, contextId=first["contextId"], pageSize=1, focus=focus)
+    assert page["status"] == "context", page
+    assert [r["name"] for r in page["relations"]] == ["table_0000"]
+    assert adapter.loads == [(names[0],)]
+    second = context(
+        service,
+        principal,
+        contextId=first["contextId"],
+        pageSize=1,
+        cursor=page["nextCursor"],
+        focus=focus,
+    )
+    assert [r["name"] for r in second["relations"]] == ["table_1498"]
+    assert adapter.loads == [(names[0],), (names[1],)]
+    original = adapter.load
+
+    def revoked(principal, key, relations=None):
+        if names[2] in relations:
+            raise SqlError("OBJECT_NOT_AUTHORIZED", "Grant revoked")
+        return original(principal, key, relations)
+
+    adapter.load = revoked
+    denied = context(
+        service,
+        principal,
+        contextId=first["contextId"],
+        pageSize=1,
+        cursor=second["nextCursor"],
+        focus=focus,
+    )
+    assert denied["error"]["code"] == "OBJECT_NOT_AUTHORIZED"
+    assert all(
+        names[2] not in scope
+        for scope in service.state.get(first["contextId"], principal).detail_groups
+    )

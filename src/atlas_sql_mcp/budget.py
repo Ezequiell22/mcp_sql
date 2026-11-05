@@ -23,7 +23,9 @@ def remaining(maximum: float) -> float:
 
 @contextmanager
 def request_budget(seconds: float):
-    token = _deadline.set(time.monotonic() + seconds)
+    outer = _deadline.get()
+    deadline = time.monotonic() + seconds
+    token = _deadline.set(deadline if outer is None else min(outer, deadline))
     try:
         yield
     finally:

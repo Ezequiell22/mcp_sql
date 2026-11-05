@@ -4,7 +4,7 @@ import time
 
 import psycopg
 
-from atlas_sql_mcp.budget import METADATA_SECONDS, remaining
+from atlas_sql_mcp.budget import METADATA_SECONDS, remaining, request_budget
 from atlas_sql_mcp.config import Connection
 from atlas_sql_mcp.domain import SqlError
 from atlas_sql_mcp.metadata.postgres import IDENTITY_SQL, metadata_deadline
@@ -65,6 +65,7 @@ class DiscoveryRows(list):
         self.database_major = database_major
 
 
+@request_budget(METADATA_SECONDS)
 def discover(config: Connection, schemas=()) -> list:
     if config.dialect == "postgresql":
         try:
@@ -85,6 +86,7 @@ def discover(config: Connection, schemas=()) -> list:
                         names.execute(POSTGRES_DISCOVERY, (list(schemas) or None,) * 2)
                         return read_names(names, version // 10000)
         except psycopg.Error:
+            remaining(METADATA_SECONDS)
             raise SqlError(
                 "CONNECTION_UNAVAILABLE",
                 "Could not authenticate or read database metadata. Check the host, port, database, credentials and TLS.",
@@ -123,6 +125,7 @@ def discover(config: Connection, schemas=()) -> list:
         finally:
             conn.close()
     except pyodbc.Error:
+        remaining(METADATA_SECONDS)
         raise SqlError(
             "CONNECTION_UNAVAILABLE",
             "Could not authenticate or read database metadata. Check connection details and TLS.",

@@ -49,3 +49,49 @@ def test_separate_deployments_isolate_handles_and_rate_budgets(service):
         service.call("atlas_sql_connect", {"connectionString": "invalid"}, principal)
     assert context_for(service, principal)["error"]["code"] == "RATE_LIMITED"
     assert context_for(other, principal)["status"] == "context"
+
+
+def test_nested_deadlines_never_extend_the_outer_request(monkeypatch):
+    import pytest
+
+    from atlas_sql_mcp import budget
+    from atlas_sql_mcp.domain import SqlError
+
+    now = [100.0]
+    monkeypatch.setattr(budget.time, "monotonic", lambda: now[0])
+    with budget.request_budget(20):
+        now[0] += 18
+        with budget.request_budget(5):
+            assert budget.remaining(5) == 2
+        assert budget.remaining(20) == 2
+        with budget.request_budget(1):
+            now[0] += 1.1
+            with pytest.raises(SqlError, match="time budget"):
+                budget.remaining(5)
+        assert 0 < budget.remaining(20) < 1
+    assert budget.remaining(5) == 5
+
+
+def test_discovery_connect_timeout_is_classified_without_leaking_driver_data(monkeypatch):
+    import psycopg
+    import pytest
+    from test_connections import URI
+
+    from atlas_sql_mcp import budget
+    from atlas_sql_mcp.connection_strings import parse_connection
+    from atlas_sql_mcp.domain import SqlError
+    from atlas_sql_mcp.metadata import discovery
+
+    now = [100.0]
+    monkeypatch.setattr(budget.time, "monotonic", lambda: now[0])
+
+    def delayed_connect(**kwargs):
+        assert budget.remaining(20) == 5
+        now[0] += 6
+        raise psycopg.OperationalError("synthetic-private-driver-password")
+
+    monkeypatch.setattr(discovery.psycopg, "connect", delayed_connect)
+    with budget.request_budget(20), pytest.raises(SqlError) as caught:
+        discovery.discover(parse_connection(URI))
+    assert caught.value.code == "VALIDATION_TIMEOUT"
+    assert "synthetic-private-driver-password" not in str(caught.value)
