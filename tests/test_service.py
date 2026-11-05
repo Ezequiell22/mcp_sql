@@ -107,6 +107,7 @@ def test_expiration(service, principal):
     now = [1000.0]
     service.clock = lambda: now[0]
     ctx = context_for(service, principal)
+    assert service.state.get(ctx["contextId"], principal).expires == 1600
     now[0] += 601
     result = service.call(
         "atlas_sql_finalize",
@@ -300,3 +301,62 @@ def test_range_cannot_be_bypassed_by_boolean_structure(service, principal, predi
     )
     result = service.call("atlas_sql_finalize", args, principal)
     assert result["error"]["code"] == "PARAMETER_MISMATCH"
+
+
+def test_failed_responses_do_not_consume_context_or_cursor_storage(service, principal, monkeypatch):
+    from atlas_sql_mcp.application import service as service_module
+
+    normal_limit = service_module.OUTPUT_BYTES
+    monkeypatch.setattr(service_module, "OUTPUT_BYTES", 1024)
+    for _ in range(25):
+        rejected = context_for(service, principal, pageSize=1)
+        assert rejected["error"]["code"] == "OUTPUT_TOO_LARGE"
+    assert not service.state.contexts
+    assert not service.state.cursors
+    monkeypatch.setattr(service_module, "OUTPUT_BYTES", normal_limit)
+    assert context_for(service, principal)["status"] == "context"
+
+
+def test_failed_continuation_does_not_publish_an_unseen_cursor(service, principal, monkeypatch):
+    from atlas_sql_mcp.application import service as service_module
+
+    first = context_for(service, principal, pageSize=1)
+    before = dict(service.state.cursors)
+    monkeypatch.setattr(service_module, "OUTPUT_BYTES", 1024)
+    rejected = context_for(
+        service,
+        principal,
+        contextId=first["contextId"],
+        cursor=first["nextCursor"],
+        pageSize=1,
+    )
+    assert rejected["error"]["code"] == "OUTPUT_TOO_LARGE"
+    assert service.state.cursors == before
+    assert len(service.state.contexts) == 1
+
+
+def test_context_expiring_during_discovery_is_never_published(service, principal):
+    now = [1000.0]
+    service.clock = lambda: now[0]
+    original = service.catalog.load
+
+    def delayed(*args):
+        now[0] += 601
+        return original(*args)
+
+    service.catalog.load = delayed
+    rejected = context_for(service, principal)
+    assert rejected["error"]["code"] == "CONTEXT_EXPIRED"
+    assert not service.state.contexts
+    assert not service.state.cursors
+
+
+def test_cursor_capacity_failure_is_atomic_with_new_context(service, principal):
+    from atlas_sql_mcp.application.context import Cursor
+
+    cursor = Cursor(principal, "existing", "focus", 1, service.clock() + 600)
+    service.state.cursors = {str(i): cursor for i in range(5000)}
+    rejected = context_for(service, principal, pageSize=1)
+    assert rejected["error"]["code"] == "RATE_LIMITED"
+    assert not service.state.contexts
+    assert len(service.state.cursors) == 5000

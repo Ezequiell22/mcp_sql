@@ -251,9 +251,8 @@ def test_oversized_failed_page_never_becomes_inspected_scope():
     principal = Principal("local", "reader")
     failed = context(service, principal, focus={"relations": ["erp.wide"]})
     assert failed["error"]["code"] == "OUTPUT_TOO_LARGE", failed
-    assert len(service.state.contexts) == 1
-    stored = next(iter(service.state.contexts.values()))
-    assert stored.detail_groups == {}
+    assert not service.state.contexts
+    assert not service.state.cursors
 
 
 def test_artifact_fingerprint_attests_typed_dependencies_not_names_only_index(large):
@@ -353,3 +352,19 @@ def test_focused_cursor_reads_only_the_next_page_and_rechecks_authorization(larg
         names[2] not in scope
         for scope in service.state.get(first["contextId"], principal).detail_groups
     )
+
+
+def test_names_only_focus_does_not_require_typed_metadata(large):
+    adapter, service, principal = large
+    first = context(service, principal, focus={"include": []})
+    names = context(
+        service,
+        principal,
+        contextId=first["contextId"],
+        focus={"relations": ["erp.table_1499"], "include": []},
+    )
+    assert names["status"] == "context", names
+    assert [r["name"] for r in names["relations"]] == ["table_1499"]
+    assert names["relations"][0]["columns"] == []
+    assert not adapter.loads
+    assert not service.state.get(first["contextId"], principal).detail_groups

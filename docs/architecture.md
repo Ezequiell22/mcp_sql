@@ -15,7 +15,7 @@ chave de API, geração interna, API de execução ou ciclo de vida de relatóri
 ## Componentes
 
 - `domain.py`: modelos e portas independentes de MCP e drivers, com `sql_type` e `database_major` neutros.
-- `application/`: conexões temporárias, contexto e finalização; `policy.py` concentra capacidades por dialeto.
+- `application/`: conexões temporárias, contexto e finalização; `context.py` mantém handles e orçamentos, e `policy.py` concentra capacidades por dialeto.
 - `metadata/`: consultas fixas aos catálogos PostgreSQL e SQL Server.
 - `analysis/`: análise estática isolada, tipos, dependências e bindings.
 - `transport/`: ferramentas MCP por stdio ou Streamable HTTP.
@@ -78,3 +78,8 @@ a extração determinística de dependências da mesma instrução SQL. A extra�
 de dependências usa a porta do analisador injetado, isolada em processo no produto.
 
 Para clientes independentes, aplique o [isolamento por implantação](docker.md).
+
+Contextos, cursores e fingerprints de detalhes são publicados juntos, somente
+após validar o contrato e o tamanho da resposta. Respostas rejeitadas não deixam
+handles não entregues ocupando as cotas. A expiração é conferida novamente antes
+da publicação. Descoberta apenas por nomes não exige carregar tipos de colunas.

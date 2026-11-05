@@ -50,7 +50,7 @@ class SqlService:
             clock,
             timezone_name,
         )
-        self.state = ContextStore(clock=clock)
+        self.state = ContextStore(clock=lambda: self.clock())
         self._admission = threading.BoundedSemaphore(10)
 
     def call(self, tool: str, arguments: dict, principal: Principal) -> dict:
@@ -97,6 +97,8 @@ class SqlService:
             finally:
                 self._admission.release()
             pending_detail = result.pop("_pendingDetail", None)
+            pending_context = result.pop("_pendingContext", None)
+            pending_cursor = result.pop("_pendingCursor", None)
             if arguments.get("contractVersion") == "1.2":
                 result = self._neutral_result(result)
             validate(SCHEMAS[tool][1], result)
@@ -112,22 +114,14 @@ class SqlService:
                     "OUTPUT_TOO_LARGE",
                     "Complete response exceeds 1 MiB. Focus metadata or reduce the output contract; SQL is never truncated.",
                 )
-            if pending_detail is not None:
-                key, scope, fingerprint = pending_detail
-                with self.state.lock:
-                    stored = self.state.get(key, principal)
-                    previous = stored.detail_groups.get(scope)
-                    if previous is not None and previous != fingerprint:
-                        raise SqlError(
-                            "CONTEXT_STALE", "Selected metadata changed. Request fresh context."
-                        )
-                    if scope not in stored.detail_groups and len(stored.detail_groups) >= 100:
-                        raise SqlError(
-                            "RATE_LIMITED",
-                            "Context detail-page budget reached. Request a new focused context.",
-                            retryable=True,
-                        )
-                    stored.detail_groups[scope] = fingerprint
+            if tool == "atlas_sql_context_get":
+                self.state.publish(
+                    result["contextId"],
+                    principal,
+                    created=pending_context,
+                    detail=pending_detail,
+                    cursor=pending_cursor,
+                )
             return result
         except SqlError as error:
             return error.envelope()
@@ -254,6 +248,7 @@ class SqlService:
         key = args.get("contextId")
         focus = args.get("focus", {})
         focused = focus.get("relations", [])
+        includes = set(focus.get("include", ["columns", "relationships", "businessDefinitions"]))
         page_size = args.get("pageSize", 25)
         focused_details = None
         focus_hash = digest([focus, page_size])
@@ -263,7 +258,13 @@ class SqlService:
                 raise SqlError("INVALID_CONTRACT", "A cursor requires its original contextId.")
             cursor = self.state.cursor(args["cursor"], key, focus_hash, principal)
             offset = cursor.offset
-        scoped_page = bool(key and focused and not focus.get("search"))
+        scoped_page = bool(
+            key
+            and focused
+            and not focus.get("search")
+            and includes.intersection({"columns", "relationships"})
+        )
+        pending_context = None
         if key:
             context = self.state.get(key, principal)
             if context.connection_id != args["connectionId"] or context.request_hash != digest(
@@ -303,15 +304,7 @@ class SqlService:
                 dialect=catalog.dialect,
             )
             key = secrets.token_urlsafe(32)
-            with self.state.lock:
-                if (
-                    len(self.state.contexts) >= 1000
-                    or sum(c.principal == principal for c in self.state.contexts.values()) >= 25
-                ):
-                    raise SqlError(
-                        "RATE_LIMITED", "Context storage budget reached.", retryable=True
-                    )
-                self.state.contexts[key] = context
+            pending_context = context
         validate_contract_version(args, catalog)
         relations = list(catalog.relations)
         if focus.get("relations"):
@@ -334,7 +327,6 @@ class SqlService:
                     for w in words
                 )
             ]
-        includes = set(focus.get("include", ["columns", "relationships", "businessDefinitions"]))
         page = relations if focused_details else relations[offset : offset + page_size]
         index_only = context.indexed and (
             not includes.intersection({"columns", "relationships"})
@@ -361,19 +353,18 @@ class SqlService:
                         "Context detail-page budget reached. Request a new focused context.",
                         retryable=True,
                     )
-                pending_detail = (key, scope, fingerprint)
+                pending_detail = (scope, fingerprint)
             details_by_key = details.relation_map
             page = [details_by_key[r.key] for r in page]
         next_cursor = None
+        pending_cursor = None
         total_relations = len(focused) if focused_details else len(relations)
         if offset + len(page) < total_relations:
-            with self.state.lock:
-                if len(self.state.cursors) >= 5000:
-                    raise SqlError("RATE_LIMITED", "Cursor storage budget reached.", retryable=True)
-                next_cursor = secrets.token_urlsafe(32)
-                self.state.cursors[next_cursor] = Cursor(
-                    principal, key, focus_hash, offset + len(page), context.expires
-                )
+            next_cursor = secrets.token_urlsafe(32)
+            pending_cursor = (
+                next_cursor,
+                Cursor(principal, key, focus_hash, offset + len(page), context.expires),
+            )
         type_key = "sqlType" if catalog.dialect == "sqlserver" else "postgresType"
         payload = []
         for relation in page:
@@ -417,6 +408,8 @@ class SqlService:
             )
         return {
             "_pendingDetail": pending_detail,
+            "_pendingContext": pending_context,
+            "_pendingCursor": pending_cursor,
             "status": "context",
             "contractVersion": "1.1" if catalog.dialect == "sqlserver" else "1.0",
             "contextId": key,

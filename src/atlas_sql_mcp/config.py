@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from atlas_sql_mcp.budget import METADATA_SECONDS
+from atlas_sql_mcp.budget import METADATA_SECONDS, remaining
 from atlas_sql_mcp.domain import Principal, SqlError, digest
 
 
@@ -58,6 +58,14 @@ class Connection:
             raise SqlError(
                 "CONNECTION_UNAVAILABLE", "Configured credential is unavailable.", retryable=True
             )
+        # libpq rounds connection timeouts up to a minimum of two seconds.
+        connection_budget = remaining(METADATA_SECONDS)
+        if connection_budget < 2:
+            raise SqlError(
+                "VALIDATION_TIMEOUT",
+                "Insufficient budget for a new catalog connection.",
+                retryable=True,
+            )
         return {
             "host": self.host,
             "port": self.port,
@@ -65,7 +73,7 @@ class Connection:
             "user": self.user,
             "password": password,
             "sslmode": self.sslmode,
-            "connect_timeout": METADATA_SECONDS,
+            "connect_timeout": int(connection_budget),
             "application_name": "atlas_sql_mcp_catalog",
             "options": f"-c default_transaction_read_only=on -c statement_timeout={METADATA_SECONDS * 1000} -c search_path=pg_catalog",
         }

@@ -74,3 +74,45 @@ class ContextStore:
         ):
             raise SqlError("CONTEXT_EXPIRED", "Cursor is unavailable for this context and focus.")
         return cursor
+
+    def publish(
+        self,
+        key: str,
+        principal: Principal,
+        *,
+        created: Context | None = None,
+        detail: tuple[tuple[str, ...], str] | None = None,
+        cursor: tuple[str, Cursor] | None = None,
+    ) -> None:
+        """Commit handles and disclosure evidence together, after wire validation."""
+        with self.lock:
+            context = created if created is not None else self.get(key, principal)
+            if context.principal != principal or context.expires <= self.clock():
+                raise SqlError("CONTEXT_EXPIRED", "Context expired before response completion.")
+            if created is not None and (
+                len(self.contexts) >= 1000
+                or sum(c.principal == principal for c in self.contexts.values()) >= 25
+            ):
+                raise SqlError("RATE_LIMITED", "Context storage budget reached.", retryable=True)
+            if cursor is not None and len(self.cursors) >= 5000:
+                raise SqlError("RATE_LIMITED", "Cursor storage budget reached.", retryable=True)
+            if detail is not None:
+                scope, fingerprint = detail
+                previous = context.detail_groups.get(scope)
+                if previous is not None and previous != fingerprint:
+                    raise SqlError(
+                        "CONTEXT_STALE", "Selected metadata changed. Request fresh context."
+                    )
+                if scope not in context.detail_groups and len(context.detail_groups) >= 100:
+                    raise SqlError(
+                        "RATE_LIMITED",
+                        "Context detail-page budget reached. Request focused context.",
+                        retryable=True,
+                    )
+            # All admission checks precede mutations, including context/cursor quotas.
+            if created is not None:
+                self.contexts[key] = context
+            if detail is not None:
+                context.detail_groups[scope] = fingerprint
+            if cursor is not None:
+                self.cursors[cursor[0]] = cursor[1]

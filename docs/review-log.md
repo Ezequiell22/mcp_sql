@@ -47,3 +47,36 @@ Verification on 2026-11-05: 473 isolated tests passed, 125 skipped; PostgreSQL-e
 suite: 580 passed, 18 skipped. Static checks, schemas, documentation and whitespace
 checks passed. The remaining SQL Server/image workflows still require explicit
 license acceptance and were not executed locally.
+
+
+## Pass 3 — lifecycle and compatibility review
+
+Findings corrected:
+
+- Failed output/schema checks could leave undisclosed contexts or cursors consuming
+  quotas. ContextStore now atomically publishes a new context, detail evidence and
+  cursor only after complete output validation. Quota rejection and expiry leave
+  no partial state. Regressions cover repeated oversized responses, continuation
+  failure, cursor capacity and expiry during discovery.
+- The extracted store captured a different clock when the service clock was
+  replaced. All context/cursor checks now follow the service clock consistently.
+- Exact-name continuations with names-only includes inadvertently loaded typed
+  metadata. They retain names-only behavior and cannot attest inspected details.
+- PostgreSQL discovery still used a fixed connection timeout when the enclosing
+  request had less time remaining. Connection kwargs now enforce the shorter
+  deadline and reject opening a connection below libpq's two-second minimum.
+  The duplicate load-path logic was removed and fake-clock regressions added.
+- Added a same-principal, separate-instance credential-handle isolation regression.
+
+Verification on 2026-11-05: PostgreSQL-enabled full verifier passed with 587 tests
+passing and 18 skipped, including all new regressions; lint, formatting, exported
+schemas, documentation links and whitespace checks passed. Resolved both Compose
+projects and confirmed distinct network names and loopback ports without a fixed
+container name. No production ingress was deployed or certified. The remaining
+SQL Server/image tests were not executed without explicit Microsoft EULA acceptance.
+
+All three passes preserve the public SQL contracts and destination read-only
+boundary. HTTP isolation is deliberately per deployment, following AGENTS.md;
+external authentication and routing must be configured by the operator. Broad
+index browsing remains live rather than caching potentially revoked privileges.
+The tests establish bounded local behavior, not sustained production throughput.

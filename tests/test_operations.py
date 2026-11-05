@@ -4,6 +4,7 @@ import json
 import logging
 
 from conftest import context_for
+from test_connections import session_reader as session_reader
 
 from atlas_sql_mcp.application.service import SqlService
 from atlas_sql_mcp.domain import Principal
@@ -95,3 +96,47 @@ def test_discovery_connect_timeout_is_classified_without_leaking_driver_data(mon
         discovery.discover(parse_connection(URI))
     assert caught.value.code == "VALIDATION_TIMEOUT"
     assert "synthetic-private-driver-password" not in str(caught.value)
+
+
+def test_separate_deployments_do_not_accept_each_others_connection_handles(
+    session_reader, principal
+):
+    import pytest
+    from test_connections import URI
+
+    from atlas_sql_mcp.application.connections import SessionCatalog
+    from atlas_sql_mcp.domain import SqlError
+
+    first, _ = session_reader
+    second = SessionCatalog()
+    # HTTP instances use the same principal; their credential stores must still differ.
+    principal = Principal("shared", "anonymous")
+    connected = first.connect({"connectionString": URI}, principal)
+    with pytest.raises(SqlError) as caught:
+        second.load(principal, connected["connectionId"])
+    assert caught.value.code == "CONNECTION_EXPIRED"
+    assert not second._sessions
+
+
+def test_discovery_does_not_connect_when_outer_deadline_cannot_cover_libpq_minimum(monkeypatch):
+    import pytest
+    from test_connections import URI
+
+    from atlas_sql_mcp import budget
+    from atlas_sql_mcp.connection_strings import parse_connection
+    from atlas_sql_mcp.domain import SqlError
+    from atlas_sql_mcp.metadata import discovery
+
+    now = [100.0]
+    monkeypatch.setattr(budget.time, "monotonic", lambda: now[0])
+
+    def forbidden_connect(**kwargs):
+        pytest.fail("An exhausted outer budget must prevent a new database connection")
+
+    monkeypatch.setattr(discovery.psycopg, "connect", forbidden_connect)
+    with budget.request_budget(1), pytest.raises(SqlError) as caught:
+        discovery.discover(parse_connection(URI))
+    assert caught.value.code == "VALIDATION_TIMEOUT"
+    with budget.request_budget(4):
+        now[0] += 1
+        assert parse_connection(URI).connect_kwargs()["connect_timeout"] == 3

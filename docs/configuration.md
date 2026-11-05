@@ -76,7 +76,9 @@ Defina a URL pública e a lista de endpoints antes de iniciar. O ingresso extern
 deve terminar HTTPS, preservar o Host público, limitar acesso e aplicar timeouts.
 Origins de navegador são rejeitadas. Não há autenticação, OAuth ou validação de
 tokens no MCP: todos os clientes usam `shared#anonymous` e compartilham conexões,
-contextos e limites. Não há isolamento entre usuários HTTP.
+contextos e limites. Não há isolamento entre usuários HTTP. Para clientes ou
+equipes independentes, use [implantações separadas](docker.md), com projetos,
+portas e regras de ingresso específicos para cada grupo.
 
 ## Conexões administradas opcionais
 

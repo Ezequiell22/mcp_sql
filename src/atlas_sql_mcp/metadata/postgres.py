@@ -83,15 +83,6 @@ class PostgresCatalog:
             raise SqlError("UNSUPPORTED_DIALECT", "PostgreSQL adapter received another dialect.")
         try:
             kwargs = config.connect_kwargs()
-            # libpq enforces a minimum of two seconds for connect_timeout.
-            connection_budget = remaining(METADATA_SECONDS)
-            if connection_budget < 2:
-                raise SqlError(
-                    "VALIDATION_TIMEOUT",
-                    "Insufficient budget for a new catalog connection.",
-                    retryable=True,
-                )
-            kwargs["connect_timeout"] = int(connection_budget)
             with psycopg.connect(**kwargs) as conn:
                 conn.read_only = True
                 conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
