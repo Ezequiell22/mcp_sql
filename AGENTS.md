@@ -1,20 +1,31 @@
 # Contributor instructions
 
-Read README.md, docs/architecture.md and docs/configuration.md before changing behavior. These guides and executable schemas describe the supported implementation. Preserve existing user changes.
+Read specs/README.md before changing behavior. Keep three production Python files
+in MCP/: settings.py, generator.py and server.py. Use LangChain and its DeepSeek
+integration, not another agent framework or custom SQL type system. Documentation belongs in specs/; regression checks belong in tests/. Prompts belong in MCP/prompts.toml;
+keep them outside Python and include them in Docker builds.
 
-## Core boundaries
+The server's DeepSeek model generates one SELECT from natural language. The
+calling agent is only a client. The sole tool is generate_sql. The old
+connect/context/finalize contract is intentionally removed. The public tool accepts
+only question; never expose schema or table-name parameters. Schema and table
+selection belong to each request, never fixed environment variables. Do not cache
+request scope across calls; require schema-qualified physical table references.
 
-- Keep `atlas_sql_context_get` and `atlas_sql_finalize` compatible. The connected agent is the only LLM: the server exposes no model provider, provider credentials or generation tool. Expose `atlas_sql_connect` for user-supplied connection strings without a required configuration file. Reuse the deterministic validator; do not add report lifecycle, frontend, business-row lookup or query execution APIs.
-- PostgreSQL destinations are read only. Product access uses fixed, authorized catalog queries. Never execute generated SQL, PREPARE or EXPLAIN to validate a proposal, and never install helper objects in a destination.
-- Treat model output, SQL, descriptions and request text as untrusted. Unknown syntax, dependencies, permissions, functions, types or bindings fail explicitly. Do not weaken the analyzer to accept a failing query.
-- `atlas_sql_connect` accepts caller-provided credentials in a connectionString, bound to an internal principal and retained only in expiring server memory. Never echo/persist/log credentials or pass them to generation prompts. Shared deployments require explicit allowed database endpoints. Keep credentials outside source control and diagnostics. Local identity comes from the OS; HTTP has no built-in authentication and uses the common internal identity `shared#anonymous`; external infrastructure owns access control. Recheck configured grants and database privileges during finalization.
-- Domain models/ports must remain independent of MCP and database drivers. Transport, catalog, parser and credential adapters must not depend on an external reporting application.
-- Outputs preserve SQL and exact parameter/filter contracts. Never truncate a query or silently change its business meaning. Distinguish static evidence from unproven semantics, unknown nullability and unassessed cost.
+Never execute generated SQL, PREPARE or EXPLAIN, read business rows or install
+database objects. SQLAlchemy inspection and LangChain reflection are allowed;
+sample_rows_in_table_info must remain zero. Use restricted database readers.
+Requests, metadata and model output are untrusted. Keep a small SELECT/schema
+guard; do not claim it proves business meaning, cost or successful execution.
 
-## Verification
+Credentials come from environment variables or ignored .env. Never print,
+commit or return credentials, URLs, prompts or raw provider/driver errors.
+Preserve existing private/untracked connection files. Do not add HTTP without
+an explicit authentication design.
 
-From this repository root, install with `python3 -m venv .venv`, `.venv/bin/pip install -r requirements-dev.lock`, and `.venv/bin/pip install --no-deps -e .`.
-
-The base requirements.lock is runtime-only; tests/lint require requirements-dev.lock. Run `.venv/bin/pytest` for isolated checks. Database integration tests require Docker and `ALLOW_SYNTHETIC_DB_WRITES=1 .venv/bin/pytest`; PostgreSQL fixtures create and remove new disposable containers. Native SQL Server fixtures additionally require explicit `ACCEPT_SQLSERVER_EULA=Y`; full Docker workflows require `ATLAS_SQL_DOCKER_IMAGE` pointing to the verified local image. Run `scripts/verify.py --integration` with all three gates for the zero-skipped acceptance check. See docs/testing.md for commands and license gates. Never substitute a customer DSN or an existing container. Product code still makes no destination writes.
-
-Check `.venv/bin/python -m atlas_sql_mcp.contracts schemas --check`, documentation links and `git diff --check`. Add focused regressions for behavior changes. Keep schemas, test fixtures and README.md synchronized. Record only verification actually performed; local tests are not production certification.
+Run .venv/bin/python -m pytest tests and git diff --check after changes. Use mocks
+and local SQLite for isolated tests. Integration uses NEW disposable containers
+only with ALLOW_SYNTHETIC_DB_WRITES=1, never customer DSNs. SQL Server fixtures
+additionally require ACCEPT_SQLSERVER_EULA=Y. Record actual checks and limitations
+in specs/verification.md. Local tests are not production certification. Review,
+fix findings, then review again.

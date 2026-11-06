@@ -1,441 +1,301 @@
-"""Static T-SQL conformance and negative tests, independent of a destination."""
+"""SQL Server usage checks: disposable fixtures, verified TLS, no generated execution."""
 
-from copy import deepcopy
-from dataclasses import replace
+import os
+import subprocess
+import tempfile
+import uuid
+from pathlib import Path
 
 import pytest
-from conftest import MemoryCatalog, args_for, with_range
+from dotenv import dotenv_values
 
-from atlas_sql_mcp.analysis.sqlserver import SqlServerAnalyzer, check_default, normalize_type
-from atlas_sql_mcp.analysis.worker import ProcessAnalyzer
-from atlas_sql_mcp.application.service import SqlService
-from atlas_sql_mcp.contracts import SCHEMAS, validate
-from atlas_sql_mcp.domain import Catalog, Column, Constraint, Principal, Relation, SqlError
-
-
-@pytest.fixture
-def tsql_catalog():
-    return Catalog(
-        "sales",
-        16,
-        (
-            Relation(
-                "dbo",
-                "orders",
-                (
-                    Column("id", "int", False, type_schema="sys"),
-                    Column("customer_id", "int", False, type_schema="sys"),
-                    Column("ordered_on", "date", False, type_schema="sys"),
-                    Column("amount", "decimal(20,2)", False, type_schema="sys"),
-                    Column("quantity", "smallint", False, type_schema="sys"),
-                    Column("name", "nvarchar(80)", True, type_schema="sys"),
-                    Column("active", "bit", False, type_schema="sys"),
-                ),
-                (Constraint("orders_pk", "p", ("id",)),),
-            ),
-            Relation(
-                "dbo",
-                "customers",
-                (
-                    Column("id", "int", False, type_schema="sys"),
-                    Column("name", "nvarchar(80)", False, type_schema="sys"),
-                ),
-                (Constraint("customers_pk", "p", ("id",)),),
-            ),
-        ),
-        "fixture-policy",
-        "sqlserver",
-    )
-
-
-@pytest.mark.parametrize(
-    "sql,types",
-    [
-        ("SELECT id FROM dbo.orders", ["int"]),
-        (
-            "SELECT SUM(CASE WHEN quantity>0 THEN amount ELSE 0 END) AS total FROM dbo.orders",
-            ["decimal(38,2)"],
-        ),
-        ("SELECT COALESCE(quantity, 0) AS quantity FROM dbo.orders", ["int"]),
-        ("SELECT CASE quantity WHEN 1 THEN id ELSE 0 END AS result FROM dbo.orders", ["int"]),
-        ("SELECT SUM(quantity) AS total, AVG(quantity) AS average FROM dbo.orders", ["int", "int"]),
-        (
-            "SELECT SUM(amount) AS total, AVG(amount) AS average FROM dbo.orders",
-            ["decimal(38,2)", "decimal(38,6)"],
-        ),
-        ("SELECT COUNT(*) AS n, COUNT_BIG(*) AS big FROM dbo.orders", ["int", "bigint"]),
-        (
-            "SELECT MIN(ordered_on) AS first_day, MAX(name) AS last_name FROM dbo.orders",
-            ["date", "nvarchar(80)"],
-        ),
-        ("SELECT id + quantity AS n FROM dbo.orders", ["int"]),
-        (
-            "SELECT CAST(id AS decimal(9,0)) * CAST(quantity AS decimal(5,0)) AS n FROM dbo.orders",
-            ["decimal(15,0)"],
-        ),
-        ("SELECT id / NULLIF(quantity,0) AS n FROM dbo.orders", ["int"]),
-        ("SELECT ROW_NUMBER() OVER(ORDER BY id) AS n FROM dbo.orders", ["bigint"]),
-        ("SELECT TOP(5) id FROM dbo.orders ORDER BY id", ["int"]),
-        ("WITH a AS (SELECT id FROM dbo.orders) SELECT id FROM a", ["int"]),
-        ("SELECT a.id FROM (SELECT id FROM dbo.orders) a", ["int"]),
-        (
-            "SELECT c.name, SUM(o.amount) AS total FROM dbo.orders o JOIN dbo.customers c ON c.id=o.customer_id GROUP BY c.name",
-            ["nvarchar(80)", "decimal(38,2)"],
-        ),
-        ("SELECT [o].[id] AS [Order ID] FROM [dbo].[orders] [o]", ["int"]),
-    ],
+pytestmark = pytest.mark.skipif(
+    os.getenv("ALLOW_SYNTHETIC_DB_WRITES") != "1" or os.getenv("ACCEPT_SQLSERVER_EULA") != "Y",
+    reason="Disposable SQL Server requires write and Microsoft EULA gates",
 )
-def test_supported_tsql(tsql_catalog, sql, types):
-    result = SqlServerAnalyzer().analyze(sql, tsql_catalog)
-    assert [o["sqlType"] for o in result["outputs"]] == types
-    assert result["dependencies"]["relations"]
+
+# This program runs in the product image, which contains Microsoft's ODBC driver.
+# Only fixture administration uses a trusted-server override. Product connections
+# use a locally trusted certificate and hostname verification throughout.
+RUNNER = r"""
+import os, time
+from urllib.parse import quote
+import pyodbc
+with open("/etc/hosts", "a") as hosts:
+    hosts.write("\n127.0.0.1 wrong.invalid\n")
+from sqlalchemy import event
+from MCP.generator import Generator, GenerationError
+from MCP.settings import Settings
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
+class Model(FakeListChatModel):
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        result = super()._generate(messages, stop, run_manager, **kwargs)
+        result.generations[0].message.response_metadata["finish_reason"] = "stop"
+        return result
+
+password = "Fixture-Admin-8!"
+admin = "DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost;UID=sa;PWD=" + password + ";Encrypt=yes;TrustServerCertificate=yes;Connection Timeout=2"
+deadline = time.monotonic() + 100
+while True:
+    try:
+        connection = pyodbc.connect(admin, autocommit=True)
+        break
+    except pyodbc.Error:
+        if time.monotonic() > deadline:
+            raise RuntimeError("Disposable SQL Server startup failed") from None
+        time.sleep(1)
+cursor = connection.cursor()
+cursor.execute("CREATE LOGIN reader WITH PASSWORD='Reader-p@ss:/?#%+8!', CHECK_POLICY=OFF")
+for database in ["erp_primary", "erp_secondary"]:
+    cursor.execute("CREATE DATABASE " + database)
+    cursor.execute("USE " + database)
+    cursor.execute("CREATE USER reader FOR LOGIN reader")
+    for schema in ["erp", "archive"]:
+        cursor.execute("CREATE SCHEMA " + schema)
+        cursor.execute("CREATE TABLE " + schema + ".customers(id int PRIMARY KEY, name nvarchar(100))")
+        cursor.execute("CREATE TABLE " + schema + ".orders(id int PRIMARY KEY, customer_id int REFERENCES " + schema + ".customers(id), amount decimal(18,2), ordered_at date)")
+        cursor.execute("GRANT SELECT ON SCHEMA::" + schema + " TO reader")
+    cursor.execute("CREATE VIEW archive.order_report AS SELECT id, amount FROM archive.orders")
+    cursor.execute("CREATE TABLE dbo.anchor(id int PRIMARY KEY)")
+    cursor.execute("GRANT SELECT ON dbo.anchor TO reader")
+connection.close()
+
+encoded = quote("Reader-p@ss:/?#%+8!", safe="")
+base = "mssql+pyodbc://reader:" + encoded + "@localhost:1433/"
+options = "?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no"
+variants = [
+    base + "erp_primary" + options,
+    base.replace("localhost", "127.0.0.1") + "erp_secondary" + options.replace("+", "%20") + "&HostNameInCertificate=localhost",
+]
+for url in variants:
+    os.environ["DATABASE_URL"] = url
+    os.environ["DEEPSEEK_API_KEY"] = os.environ.get("DEEPSEEK_API_KEY") or "offline"
+    settings = Settings.load()
+    print("checking connection variant", variants.index(url), flush=True)
+    try:
+        probe = pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost;UID=reader;PWD={Reader-p@ss:/?#%+8!};DATABASE=erp_primary;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=3")
+        probe.close()
+    except pyodbc.Error as error:
+        print("verified TLS connection SQLSTATE", error.args[0], flush=True)
+        raise RuntimeError("Verified TLS fixture connection failed") from None
+    generator = Generator(settings, model=Model(responses=[
+        "SELECT id FROM erp.orders", "SELECT id FROM archive.orders", "SELECT id FROM dbo.anchor"
+    ]))
+    statements = []
+    @event.listens_for(generator.engine, "before_cursor_execute")
+    def record(connection, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+    try:
+        for schema, table in [("erp", "orders"), ("archive", "orders"), ("dbo", "anchor")]:
+            print("checking request", schema or "default", flush=True)
+            result = generator.generate("Return IDs", [table], schema=schema)
+            assert result["execution_performed"] is False
+            assert result["schema"] == (schema or "dbo")
+        assert not any("from erp.orders" in s.lower() or "from archive.orders" in s.lower() or "from dbo.anchor" in s.lower() for s in statements)
+        try:
+            generator.generate("Return IDs", schema="missing_schema")
+            raise AssertionError("Unknown schema accepted")
+        except GenerationError as error:
+            assert "unavailable" in str(error)
+        generator.model = Model(responses=["SELECT id FROM erp.orders"])
+        try:
+            generator.generate("Return IDs", ["orders"], schema="archive")
+            raise AssertionError("Cross-request schema accepted")
+        except GenerationError:
+            pass
+    finally:
+        generator.engine.dispose()
+
+    from langchain_core.runnables import RunnableLambda
+    from MCP.generator import ScopeDecision
+    class MultiSchemaModel(Model):
+        def with_structured_output(self, schema, **kwargs):
+            return RunnableLambda(lambda _: ScopeDecision(outcome="selected", names=["erp", "archive"]))
+    sql = "SELECT o.id, v.amount FROM erp.orders o JOIN archive.order_report v ON v.id = o.id"
+    generator = Generator(settings, model=MultiSchemaModel(responses=[sql]))
+    try:
+        result = generator.generate("Compare current orders and archived order reports, matching their order IDs")
+        assert result["sql"] == sql and result["schemas"] == ["archive", "erp"]
+    finally:
+        generator.engine.dispose()
+
+# Exercise the real MCP boundary, where errors are deliberately sanitized.
+import asyncio, sys
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+async def mcp_request(url, arguments):
+    environment = dict(os.environ, DATABASE_URL=url)
+    params = StdioServerParameters(command=sys.executable, args=["-m", "MCP.server"], env=environment, cwd="/app")
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            return await session.call_tool("generate_sql", arguments)
+async def check_mcp():
+    # ODBC on Linux accepts a match against either Server or HostnameInCertificate.
+    # Use a genuinely mismatched Server alias, not a wrong alternate for localhost.
+    for url in [variants[0].replace(encoded, "wrong-password"), variants[0].replace("erp_primary", "missing_db"), variants[0].replace("@localhost:", "@wrong.invalid:")]:
+        result = await mcp_request(url, {"question": "Return order IDs"})
+        assert result.is_error
+        text = str(result.content)
+        assert encoded not in text and "Reader-p" not in text and "mssql+" not in text
+        assert "ODBC" not in text and "28000" not in text
+    if os.getenv("RUN_LIVE_DEEPSEEK") == "1":
+        import sqlglot
+        from sqlglot import exp
+        response = await mcp_request(variants[0], {"question": "Return customer ID and SUM(order amount * 2), joining customers to orders on customer_id = customers.id. Only amount > 10. Group by customer ID."})
+        assert not response.is_error
+        result = response.structured_content
+        tree = sqlglot.parse_one(result["sql"], read="tsql")
+        assert all(tree.find(kind) is not None for kind in [exp.Join, exp.Group, exp.Where, exp.Sum, exp.Mul])
+        assert all(t.db.lower() == "erp" for t in tree.find_all(exp.Table))
+        for question, expected in [
+            ("For current records, what is the total order value for each customer?", "erp"),
+            ("Which customers in the archived records have never placed an order?", "archive"),
+        ]:
+            response = await mcp_request(variants[0], {"question": question})
+            assert not response.is_error
+            assert response.structured_content["schema"] == expected
+            assert response.structured_content["execution_performed"] is False
+
+        assert result["execution_performed"] is False
+asyncio.run(check_mcp())
+print("SQL Server verified TLS, URL variants, metadata isolation, sanitized failures and generation checks passed")
+"""
 
 
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "SELECT id FROM dbo.orders; SELECT id FROM dbo.orders",
-        "SELECT id INTO dbo.copy FROM dbo.orders",
-        "DELETE FROM dbo.orders",
-        "EXEC sys.sp_who",
-        "SELECT * FROM dbo.orders",
-        "SELECT id FROM otherdb.dbo.orders",
-        "SELECT id FROM orders",
-        "SELECT secret FROM dbo.orders",
-        "SELECT id FROM dbo.orders WITH(NOLOCK)",
-        "SELECT id FROM dbo.orders OPTION(RECOMPILE)",
-        "SELECT dbo.unknown(id) AS x FROM dbo.orders",
-        "SELECT NEWID() AS x FROM dbo.orders",
-        "SELECT SUM(name) AS x FROM dbo.orders",
-        "SELECT AVG(active) AS x FROM dbo.orders",
-        "SELECT id, SUM(amount) AS total FROM dbo.orders",
-        "SELECT id, name, SUM(amount) AS total FROM dbo.orders GROUP BY id",
-        "SELECT ROW_NUMBER() OVER() AS n FROM dbo.orders",
-        "SELECT TOP(5) id FROM dbo.orders",
-        "SELECT TOP(5) PERCENT id FROM dbo.orders ORDER BY id",
-        "SELECT id FROM dbo.orders LIMIT 5",
-        "SELECT id::int AS n FROM dbo.orders",
-        "SELECT id FROM dbo.orders WHERE id=@@SPID",
-        "SELECT id FROM dbo.orders WHERE id=@p1",
-        "SELECT id FROM dbo.orders WHERE id=CAST(@p2 AS int)",
-        "SELECT CAST(@p1 AS int) AS x FROM dbo.orders",
-        "SELECT id FROM dbo.orders WHERE id=CAST(@p1 AS int) OR id=CAST(@p1 AS bigint)",
-        "SELECT id FROM dbo.orders UNION SELECT id FROM dbo.orders",
-        "SELECT id FROM dbo.orders CROSS JOIN dbo.customers",
-        "SELECT SUM(c.id) AS n FROM dbo.customers c JOIN dbo.orders o ON c.id=o.customer_id",
-        "SELECT id / quantity AS n FROM dbo.orders",
-        "SELECT amount * amount AS n FROM dbo.orders",
-        "SELECT CAST(id AS geography) AS x FROM dbo.orders",
-        "SELECT id FROM dbo.orders WHERE ordered_on=CAST(@p1 AS int)",
-        "SELECT id FROM dbo.orders WHERE id",
-        "SELECT id FROM dbo.orders WHERE CAST(id AS bit)",
-        "SELECT id FROM dbo.orders WHERE ROW_NUMBER() OVER(ORDER BY id)=1",
-        "SELECT SUM(amount) AS total FROM dbo.orders HAVING id=1",
-        "SELECT SUM(amount) AS total FROM dbo.orders ORDER BY id",
-        "SELECT CAST(id AS date) AS day FROM dbo.orders",
-        "SELECT id FROM dbo.orders WHERE ordered_on BETWEEN 1 AND 2",
-        "SELECT id FROM dbo.orders WHERE ordered_on IN (1,2)",
-    ],
-)
-def test_unsupported_and_unsafe_queries_fail(tsql_catalog, sql):
-    with pytest.raises(SqlError):
-        SqlServerAnalyzer().analyze(sql, tsql_catalog)
-
-
-def test_authorization_in_nested_ctes(tsql_catalog):
-    sql = "WITH a AS (SELECT id FROM private.orders) SELECT id FROM a"
-    with pytest.raises(SqlError):
-        SqlServerAnalyzer().analyze(sql, tsql_catalog)
-
-
-def test_full_service_and_isolated_analyzer(tsql_catalog):
-    principal = Principal("local", "analyst")
-    service = SqlService(MemoryCatalog(tsql_catalog), ProcessAnalyzer())
-    ctx = service.call(
-        "atlas_sql_context_get",
-        {"contractVersion": "1.1", "connectionId": "sales", "request": "orders in period"},
-        principal,
-    )
-    assert ctx["status"] == "context", ctx
-    assert ctx["dialect"] == "sqlserver"
-    assert "postgresMajorVersion" not in ctx
-    assert "postgresType" not in ctx["relations"][0]["columns"][0]
-    args = with_range(
-        args_for(
-            "SELECT id FROM dbo.orders WHERE ordered_on>=CAST(@p1 AS date) AND ordered_on<CAST(@p2 AS date)",
-            ["id"],
-            ctx["contextId"],
-        )
-    )
-    args["contractVersion"] = "1.1"
-    for parameter in args["parameters"]:
-        parameter["sqlType"] = parameter.pop("postgresType")
-    result = service.call("atlas_sql_finalize", args, principal)
-    assert result["status"] == "validated", result
-    artifact = result["artifact"]
-    assert artifact["sql"] == args["sql"]
-    assert artifact["outputs"][0]["lineage"] == ["dbo.orders.id"]
-    assert artifact["validation"]["syntax"] == "passed_static_subset"
-    assert artifact["validation"]["executionPerformed"] is False
-    assert artifact["requiredSessionSettings"]["QUOTED_IDENTIFIER"] == "ON"
-    validate(SCHEMAS["atlas_sql_finalize"][1], result)
-    repeat = service.call("atlas_sql_finalize", args, principal)
-    assert artifact["artifactHash"] == repeat["artifact"]["artifactHash"]
-    for mutate in [
-        lambda a: a.update(contractVersion="1.0"),
-        lambda a: a["parameters"][0].update(sqlType="int"),
-        lambda a: a.update(sql=a["sql"].replace(">=", ">")),
-        lambda a: a["outputs"][0].update(sqlType="bigint"),
-    ]:
-        changed = deepcopy(args)
-        mutate(changed)
-        assert service.call("atlas_sql_finalize", changed, principal)["status"] == "error"
-    service.catalog.value = replace(tsql_catalog, policy_version="revoked")
-    assert service.call("atlas_sql_finalize", args, principal)["error"]["code"] == "CONTEXT_STALE"
-
-
-@pytest.mark.parametrize(
-    "datatype,value",
-    [
-        ("tinyint", "256"),
-        ("tinyint", "-1"),
-        ("decimal(4,2)", "100"),
-        ("decimal(4,2)", "1.234"),
-        ("nvarchar(2)", "abc"),
-        ("nvarchar(2)", "😀x"),
-        ("varchar(5)", "é"),
-        ("datetimeoffset(7)", "2026-01-01T00:00:00"),
-        ("datetime2(7)", "2026-01-01T00:00:00Z"),
-    ],
-)
-def test_lossless_tsql_defaults(datatype, value):
-    with pytest.raises(SqlError):
-        check_default({"type": "text", "nullable": False, "default": value}, datatype)
-
-
-@pytest.mark.parametrize(
-    "datatype",
-    [
-        "nchar(max)",
-        "decimal(39,2)",
-        "decimal(5,6)",
-        "varchar(8001)",
-        "datetime2(8)",
-        "xml",
-        "hierarchyid",
-        "sys.int",
-    ],
-)
-def test_unknown_types_fail(datatype):
-    with pytest.raises(SqlError):
-        normalize_type(datatype)
-
-
-def test_sqlserver_fixtures_are_executable_contracts(tsql_catalog):
-    import json
-    from pathlib import Path
-
-    from atlas_sql_mcp.config import load_connections
-
+@pytest.mark.parametrize("version", ["2022", "2025"])
+def test_sqlserver_usage(version):
+    image = os.getenv("MCP_TEST_IMAGE")
+    if not image:
+        pytest.fail("SQL Server checks require MCP_TEST_IMAGE with ODBC Driver 18")
     root = Path(__file__).resolve().parents[1]
-    assert (
-        load_connections(root / "tests/fixtures/connections.json")["sales-sqlserver"].dialect
-        == "sqlserver"
-    )
-    request = json.loads((root / "tests/fixtures/payloads/finalize-sqlserver.json").read_text())
-    validate(SCHEMAS["atlas_sql_finalize"][0], request)
-    service = SqlService(MemoryCatalog(tsql_catalog), SqlServerAnalyzer())
-    principal = Principal("local", "analyst")
-    ctx = service.call(
-        "atlas_sql_context_get",
-        {"contractVersion": "1.1", "connectionId": "sales", "request": "orders in period"},
-        principal,
-    )
-    request["contextId"] = ctx["contextId"]
-    assert service.call("atlas_sql_finalize", request, principal)["status"] == "validated"
+    name = "atlas-sqlserver-usage-" + uuid.uuid4().hex[:12]
+    environment = os.environ.copy()
+    values = dotenv_values(root / ".env")
+    for key in ["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL"]:
+        environment[key] = os.getenv(key) or values.get(key) or ""
+    if os.getenv("RUN_LIVE_DEEPSEEK") == "1" and not environment["DEEPSEEK_API_KEY"]:
+        pytest.fail("Live usage requires the configured provider key")
+    environment["DEEPSEEK_API_KEY"] = environment["DEEPSEEK_API_KEY"] or "offline-test-only"
+    environment["DEEPSEEK_MODEL"] = environment["DEEPSEEK_MODEL"] or "deepseek-flash"
+    with tempfile.TemporaryDirectory(prefix="atlas-sqlserver-tls-") as directory:
+        temporary = Path(directory)
+        # Trust a dedicated CA, not the server leaf itself, so hostname checks
+        # exercise a normal verified chain rather than direct leaf trust.
+        commands = [
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", str(temporary / "ca.key"), "-out", str(temporary / "ca.crt"),
+             "-days", "1", "-subj", "/CN=Disposable fixture CA",
+             "-addext", "basicConstraints=critical,CA:TRUE",
+             "-addext", "keyUsage=critical,keyCertSign,cRLSign"],
+            ["openssl", "req", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", str(temporary / "server.key"), "-out", str(temporary / "server.csr"),
+             "-subj", "/CN=localhost"],
+        ]
+        (temporary / "server.ext").write_text(
+            "basicConstraints=critical,CA:FALSE\n"
+            "keyUsage=critical,digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage=serverAuth\n"
+            "subjectAltName=DNS:localhost,IP:127.0.0.1\n"
+        )
+        commands.append([
+            "openssl", "x509", "-req", "-in", str(temporary / "server.csr"),
+            "-CA", str(temporary / "ca.crt"), "-CAkey", str(temporary / "ca.key"),
+            "-CAcreateserial", "-out", str(temporary / "server.crt"), "-days", "1",
+            "-extfile", str(temporary / "server.ext"),
+        ])
+        for command in commands:
+            subprocess.run(command, check=True, capture_output=True)
+        # Disposable key only; SQL Server runs as an unprivileged container user.
+        temporary.chmod(0o755)
+        (temporary / "server.key").chmod(0o644)
+        (temporary / "mssql.conf").write_text(
+            "[network]\ntlscert=/tls/server.crt\ntlskey=/tls/server.key\nforceencryption=1\n"
+        )
+        started = False
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "-d",
+                    "--name",
+                    name,
+                    "--memory",
+                    "3g",
+                    "-e",
+                    "ACCEPT_EULA=Y",
+                    "-e",
+                    "MSSQL_SA_PASSWORD=Fixture-Admin-8!",
+                    "-e",
+                    "MSSQL_PID=Developer",
+                    "-e",
+                    "MSSQL_MEMORY_LIMIT_MB=2048",
+                    "-v",
+                    f"{temporary}:/tls:ro",
+                    "-v",
+                    f"{temporary / 'mssql.conf'}:/var/opt/mssql/mssql.conf:ro",
+                    f"mcr.microsoft.com/mssql/server:{version}-latest",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            started = True
+            runner = temporary / "usage.py"
+            runner.write_text(RUNNER)
+            result = subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--user",
+                    "0",
+                    "--network",
+                    f"container:{name}",
+                    "-v",
+                    f"{root}:/app:ro",
+                    "-v",
+                    f"{temporary}:/fixtures:ro",
+                    "--env",
+                    "DEEPSEEK_API_KEY",
+                    "--env",
+                    "DEEPSEEK_MODEL",
+                    "--env",
+                    "RUN_LIVE_DEEPSEEK",
+                    "--entrypoint",
+                    "sh",
+                    image,
+                    "-c",
+                    "cp /fixtures/ca.crt /usr/local/share/ca-certificates/fixture.crt && update-ca-certificates >/dev/null 2>&1 && PYTHONPATH=/app python /fixtures/usage.py",
+                ],
+                env=environment,
+                text=True,
+                capture_output=True,
+                timeout=240,
+            )
+            # Raw driver/provider errors may contain secrets. Never put captured
+            # output in assertions or pytest diagnostics.
+            failure = result.returncode != 0
+            if failure:
+                # Expose only exception class and script line, never its message.
+                import re
 
-
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "SELECT id FROM dbo.orders WHERE id >",
-        "SELECT id FROM dbo.orders WHERE (id=1",
-        "SELECT SUM(amount) OVER(ORDER BY id) AS n FROM dbo.orders",
-        "SELECT id, ROW_NUMBER() OVER(ORDER BY SUM(quantity)) AS n FROM dbo.orders",
-        "SELECT COUNT(*) AS n FROM dbo.orders GROUP BY name + quantity",
-        "SELECT CASE WHEN id THEN amount ELSE 0 END AS n FROM dbo.orders",
-        "SELECT COALESCE(name, id) AS n FROM dbo.orders",
-    ],
-)
-def test_tsql_semantic_regressions(tsql_catalog, sql):
-    with pytest.raises(SqlError):
-        SqlServerAnalyzer().analyze(sql, tsql_catalog)
-
-
-def test_wrong_context_version_does_not_consume_storage(tsql_catalog):
-    service = SqlService(MemoryCatalog(tsql_catalog), SqlServerAnalyzer())
-    result = service.call(
-        "atlas_sql_context_get",
-        {"contractVersion": "1.0", "connectionId": "sales", "request": "orders"},
-        Principal("local", "analyst"),
-    )
-    assert result["error"]["code"] == "INVALID_CONTRACT"
-    assert "1.1" in result["error"]["message"]
-    assert not service.state.contexts
-
-
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "SELECT id FROM dbo.orders HAVING id>0",
-        "SELECT 1 AS n FROM dbo.orders HAVING id>0",
-        "SELECT DISTINCT id FROM dbo.orders ORDER BY quantity",
-        "SELECT COUNT(DISTINCT c.id) AS n FROM dbo.orders o JOIN dbo.customers c "
-        "ON c.id=o.customer_id AND COUNT(DISTINCT c.id)>0",
-    ],
-)
-def test_reject_invalid_tsql_clause_semantics(tsql_catalog, sql):
-    with pytest.raises(SqlError):
-        SqlServerAnalyzer().analyze(sql, tsql_catalog)
-
-
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "SELECT DISTINCT id AS order_id FROM dbo.orders ORDER BY order_id",
-        "SELECT COUNT(*) AS n FROM dbo.orders HAVING COUNT(*)>0",
-        "SELECT id FROM dbo.orders WHERE EXISTS "
-        "(SELECT COUNT(*) AS n FROM dbo.customers HAVING COUNT(*)>0)",
-    ],
-)
-def test_valid_tsql_distinct_and_implicit_group(tsql_catalog, sql):
-    assert SqlServerAnalyzer().analyze(sql, tsql_catalog)["outputs"]
-
-
-@pytest.mark.parametrize(
-    "expression,expected",
-    [
-        ("CAST(id AS smallint)+quantity", "smallint"),
-        ("CAST(id AS tinyint)+CAST(quantity AS tinyint)", "tinyint"),
-        ("-CAST(id AS tinyint)", "smallint"),
-        ("CAST(ordered_on AS datetime)", "datetime"),
-        ("CAST(ordered_on AS smalldatetime)", "smalldatetime"),
-        ("CAST(name AS nvarchar(max))", "nvarchar(max)"),
-    ],
-)
-def test_native_erp_types_and_integer_precedence(tsql_catalog, expression, expected):
-    result = SqlServerAnalyzer().analyze(
-        f"SELECT {expression} AS result FROM dbo.orders", tsql_catalog
-    )
-    assert result["outputs"][0]["sqlType"] == expected
-
-
-@pytest.mark.parametrize(
-    "datatype,value",
-    [
-        ("datetime", "1752-12-31T23:59:59"),
-        ("datetime", "2026-01-01T00:00:00.001"),
-        ("datetime", "2026-01-01T00:00:00Z"),
-        ("smalldatetime", "1899-12-31T23:59:00"),
-        ("smalldatetime", "2079-06-07T00:00:00"),
-        ("smalldatetime", "2026-01-01T00:00:01"),
-    ],
-)
-def test_legacy_timestamp_defaults_fail_lossy_values(datatype, value):
-    with pytest.raises(SqlError):
-        check_default({"type": "timestamp", "nullable": False, "default": value}, datatype)
-
-
-@pytest.mark.parametrize(
-    "datatype,value",
-    [
-        ("datetime", "1753-01-01T00:00:00"),
-        ("smalldatetime", "2079-06-06T23:59:00"),
-        ("nvarchar(max)", "ERP notes 😀"),
-    ],
-)
-def test_erp_type_defaults_preserve_values(datatype, value):
-    check_default({"type": "text", "nullable": False, "default": value}, datatype)
-
-
-@pytest.fixture
-def mixed_case_erp_catalog():
-    return Catalog(
-        "erp",
-        16,
-        (
-            Relation(
-                "dbo",
-                "OINV",
-                (
-                    Column("DocEntry", "int", False, type_schema="sys"),
-                    Column("CardCode", "nvarchar(15)", False, type_schema="sys"),
-                    Column("DocStatus", "char(1)", False, type_schema="sys"),
-                    Column("DocTotal", "decimal(19,6)", False, type_schema="sys"),
-                ),
-                (Constraint("OINV_PK", "p", ("DocEntry",)),),
-            ),
-            Relation(
-                "dbo",
-                "OCRD",
-                (
-                    Column("CardCode", "nvarchar(15)", False, type_schema="sys"),
-                    Column("CardName", "nvarchar(100)", False, type_schema="sys"),
-                ),
-                (Constraint("OCRD_PK", "p", ("CardCode",)),),
-            ),
-        ),
-        "test",
-        "sqlserver",
-    )
-
-
-@pytest.mark.parametrize(
-    "sql,keys",
-    [
-        (
-            "SELECT i.DocStatus AS Status, COUNT_BIG(*) AS InvoiceCount, "
-            "SUM(i.DocTotal) AS GrossTotal FROM dbo.OINV i "
-            "GROUP BY i.DocStatus ORDER BY i.DocStatus",
-            ["Status", "InvoiceCount", "GrossTotal"],
-        ),
-        (
-            "SELECT c.CardName AS Customer, SUM(i.DocTotal) AS GrossTotal "
-            "FROM dbo.OINV i JOIN dbo.OCRD c ON c.CardCode=i.CardCode "
-            "GROUP BY c.CardName ORDER BY GrossTotal",
-            ["Customer", "GrossTotal"],
-        ),
-        (
-            "WITH Totals AS (SELECT i.CardCode AS CustomerCode, SUM(i.DocTotal) AS Total "
-            "FROM dbo.OINV i GROUP BY i.CardCode) "
-            "SELECT t.CustomerCode AS CustomerCode, t.Total AS Revenue "
-            "FROM Totals t ORDER BY Revenue",
-            ["CustomerCode", "Revenue"],
-        ),
-        (
-            "SELECT [i].[DocEntry] AS [Invoice ID] FROM [dbo].[OINV] [i]",
-            ["Invoice ID"],
-        ),
-    ],
-)
-def test_mixed_case_catalog_and_aliases_preserve_exact_identifiers(
-    mixed_case_erp_catalog, sql, keys
-):
-    analyzed = SqlServerAnalyzer().analyze(sql, mixed_case_erp_catalog)
-    assert [o["key"] for o in analyzed["outputs"]] == keys
-    assert "dbo.OINV" in analyzed["dependencies"]["relations"]
-    assert any("Doc" in c or "Card" in c for c in analyzed["dependencies"]["columns"])
-
-
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "SELECT i.docentry AS id FROM dbo.OINV i",
-        "SELECT i.DocEntry AS id FROM dbo.oinv i",
-    ],
-)
-def test_exact_catalog_matching_does_not_assume_case_insensitive_collation(
-    mixed_case_erp_catalog, sql
-):
-    with pytest.raises(SqlError):
-        SqlServerAnalyzer().analyze(sql, mixed_case_erp_catalog)
+                frames = re.findall(r'File "/fixtures/usage.py", line (\d+)', result.stderr)
+                category = re.findall(r"^([A-Za-z]+(?:Error|Exception)):", result.stderr, re.M)
+                print(result.stdout)
+                print(
+                    "TLS failure:",
+                    "certificate verify failed" in result.stderr.lower(),
+                    "login failure:",
+                    "Login failed" in result.stderr,
+                )
+                pytest.fail(
+                    "Disposable SQL Server check failed at fixture line "
+                    + (frames[-1] if frames else "startup")
+                    + "; category "
+                    + (category[-1] if category else "unknown")
+                )
+        finally:
+            if started:
+                subprocess.run(["docker", "rm", "-f", name], check=True, capture_output=True)

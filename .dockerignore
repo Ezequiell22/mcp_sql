@@ -1,12 +1,7 @@
 **
 !Dockerfile
 !.dockerignore
-!pyproject.toml
-!README.md
-!requirements.lock
-!requirements-sqlserver.lock
-!src/
-!src/**
-src/**/__pycache__/
-src/**/*.pyc
-src/**/*.egg-info/
+!MCP/
+!MCP/*.py
+!MCP/requirements.txt
+!MCP/prompts.toml

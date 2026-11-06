@@ -1,26 +1,41 @@
 name: atlas-sql
 services:
   mcp:
+    container_name: atlas-sql-mcp
+    restart: unless-stopped
     image: atlas-sql-mcp:local
     build:
       context: .
       args:
         ACCEPT_EULA: ${ACCEPT_EULA:-N}
-    command: ["--transport", "stdio"]
+    env_file: .env
+    networks: [database]
+    volumes:
+      - ${DATABASE_CA_FILE:?Set DATABASE_CA_FILE in .env}:/run/atlas/database-ca.crt:ro
+    command: ["--docker-stdio"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "MCP.server", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     stdin_open: true
-    restart: unless-stopped
+    init: true
     read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=128m
+      - /tmp:rw,noexec,nosuid,size=64m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 128
-    mem_limit: 2g
+    mem_limit: 1g
     cpus: 2
-    environment:
-      ATLAS_SQL_TIMEZONE: ${ATLAS_SQL_TIMEZONE:-UTC}
     logging:
-      driver: json-file
+      driver: "json-file"
       options:
-        max-size: 10m
+        max-size: "10m"
         max-file: "3"
+
+networks:
+  database:
+    external: true
+    name: ${DATABASE_DOCKER_NETWORK:?Set DATABASE_DOCKER_NETWORK in .env}

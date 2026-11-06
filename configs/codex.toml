@@ -1,5 +1,0 @@
-# Replace this example URL with the public production MCP URL.
-[mcp_servers.atlas_sql]
-url = "https://sql-mcp.example.com/mcp"
-startup_timeout_sec = 20
-tool_timeout_sec = 120

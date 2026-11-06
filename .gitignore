@@ -11,3 +11,4 @@ dist/
 .env.*
 *.pgpass
 connections.local.json
+env.env

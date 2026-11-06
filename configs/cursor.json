@@ -1,7 +1,0 @@
-{
-  "mcpServers": {
-    "atlas_sql": {
-      "url": "https://sql-mcp.example.com/mcp"
-    }
-  }
-}
