@@ -8,6 +8,7 @@ services:
       context: .
       args:
         ACCEPT_EULA: ${ACCEPT_EULA:-N}
+      secrets: [database_ca]
     env_file: .env
     networks: [database]
     volumes:
@@ -39,3 +40,7 @@ networks:
   database:
     external: true
     name: ${DATABASE_DOCKER_NETWORK:?Set DATABASE_DOCKER_NETWORK in .env}
+
+secrets:
+  database_ca:
+    file: ${DATABASE_CA_FILE:?Set DATABASE_CA_FILE in .env}

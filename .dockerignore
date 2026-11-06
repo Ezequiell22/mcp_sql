@@ -4,4 +4,3 @@
 !MCP/
 !MCP/*.py
 !MCP/requirements.txt
-!MCP/prompts.toml

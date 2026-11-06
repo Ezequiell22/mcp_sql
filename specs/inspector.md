@@ -1,62 +1,32 @@
-# Manual testing with MCP Inspector
+# MCP Inspector
 
-The local Inspector is available at http://127.0.0.1:6274. Use the browser tab
-opened by its launcher, which includes its private authentication token. The UI
-and proxy bind to loopback. The MCP itself uses stdio only.
+Use stdio. For a local process, command `.venv/bin/python`, arguments
+`-m MCP.server`, working directory at the repository root.
 
-The server `atlas-sql` connects to the single persistent Docker process in
-`atlas-sql-mcp`. It uses the exact bridge from the ignored local
-`.env.inspector/mcp.json`: Transport STDIO, Command docker, its configured Args.
-The bridge holds an exclusive client lock. Disconnect Inspector before CLI checks.
+For the existing persistent Docker listener, use command `docker` and these
+arguments (the shell command is one final argument):
 
-1. Connect `atlas-sql`. Reconnect after a container rebuild.
-2. Open Tools, then `generate_sql`.
-3. Fill only Question and click Execute Tool.
-4. A generated result has status `generated`, one SELECT and
-   `execution_performed: false`. No SQL is executed and no business rows return.
-5. A business question missing essential definitions can return status
-   `needs_clarification`. Submit a new complete question containing the answer;
-   this server does not remember earlier calls. Infrastructure failures remain
-   Tool Errors and can be correlated with Docker logs.
-
-## Two questions to paste into Question
-
-1. How many application clients are configured in the ERP?
-2. List up to 10 active application clients ordered by name.
-
-These requests require no database identifiers. The current connection is the
-existing Docker iDempiere ERP database. Metadata inspection found 912 base tables
-in its nonempty application schema; the empty default schema is ignored. No
-synthetic runtime database or fixed table allowlist is configured. The server
-chooses relevant tables afresh, within documented resource budgets. It generates
-SQL; business meaning and successful database execution are not certified.
-
-“Give me a 360-degree view of each company” does not define which company role or
-metrics belong in the view. If clarification is needed, specify business concepts
-such as application clients, organizations, customers or suppliers, together with
-the desired information and period. Never supply a table name to resolve this.
-
-## Configuration and restart
-
-The repository has one root `.env`, containing runtime and Compose settings.
-It is ignored and private; no alternate environment file is used. The existing
-ERP project's own files and private connection files remain intact. Compose joins
-the ERP network and mounts the existing database CA read-only for verified TLS.
-
-```sh
-docker compose up -d --wait
-npx -y -p node@24.22.1 -p @modelcontextprotocol/inspector@2.14.0 mcp-inspector --web --config .env.inspector/mcp.json --server atlas-sql
+```json
+["exec","-i","atlas-sql-mcp","flock","-n","-E","75","/tmp/atlas-mcp/client.lock","sh","-c","cat /tmp/atlas-mcp/output & reader=$!; trap 'kill \"$reader\" 2>/dev/null || true' EXIT; cat > /tmp/atlas-mcp/input"]
 ```
 
-Do not launch a second Inspector if the existing one is running. Its token and
-local logs must stay private. To inspect MCP diagnostics:
+The ignored `.env.inspector/mcp.json` may already contain this bridge. It remains
+private. Disconnect the current client before attaching another. Do not start a
+second Python listener with docker exec. Reconnect after replacing the container.
 
-```sh
-docker compose logs -f mcp
+Open Tools → `execute_select`, fill **sql**, then execute. First check:
+
+```sql
+SELECT 1 AS connection_check
 ```
 
-Alternatively, Docker Desktop → atlas-sql-mcp → Logs. Request IDs correlate
-metadata, selection, generation, validation and clarification/failure events.
-Questions, SQL, prompts, credentials and raw dependency errors are excluded.
+Expect columns `["connection_check"]`, rows `[[1]]`, row_count `1`.
+Natural-language questions are no longer accepted. The calling project must
+provide SQL and business/schema knowledge. Use an explicit filter or row limit
+when testing a business query; the server returns all rows from the submitted SQL.
 
-Reference: https://github.com/modelcontextprotocol/inspector
+The current private deployment's database URL, reader, network and public CA are
+configured through the ignored root `.env`. This refactor preserves those files
+and Compose's certificate installation. It does not certify their permissions or
+execute queries against the configured business database. Rebuild and restart
+explicitly when ready to switch that running deployment to the new contract.

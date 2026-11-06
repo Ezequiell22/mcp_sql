@@ -14,6 +14,13 @@ RUN test "$ACCEPT_EULA" = "Y" \
 WORKDIR /app
 COPY MCP/requirements.txt /app/MCP/requirements.txt
 RUN pip install --no-cache-dir -r MCP/requirements.txt
+# Only the public database CA certificate is installed; private keys and runtime
+# credentials never enter the build context or image.
+RUN --mount=type=secret,id=database_ca \
+    if [ -s /run/secrets/database_ca ]; then \
+      install -m 0644 /run/secrets/database_ca /usr/local/share/ca-certificates/atlas-database.crt; \
+      update-ca-certificates; \
+    fi
 COPY MCP /app/MCP
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 USER 10001:10001

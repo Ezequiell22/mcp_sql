@@ -1,14 +1,13 @@
-"""One stdio MCP tool. Deploy one configured database scope per server instance."""
+"""One SELECT execution tool over stdio, with an optional persistent Docker bridge."""
 
-import logging
 import json
+import logging
 import os
-import time
-import uuid
-import warnings
-from pathlib import Path
 import sys
+import time
+import warnings
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -16,14 +15,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-# Questions and metadata must not leave through optional LangSmith tracing.
-# Set before loading .env (override=False) or constructing LangChain clients.
-for tracing_flag in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING"):
-    os.environ[tracing_flag] = "false"
-
-from MCP.generator import LOGGER, PROMPTS, REQUEST_ID, ClarificationNeeded, GenerationError, Generator, log_event
+from MCP.executor import Executor, QueryError
 from MCP.settings import Settings
-
 
 HEALTH_FILE = Path("/tmp/atlas-mcp/health.json")
 
@@ -42,26 +35,16 @@ async def heartbeat():
     while True:
         # Atomic replacement prevents health probes from observing partial JSON.
         temporary = HEALTH_FILE.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"pid": os.getpid(), "heartbeat": time.monotonic()}))
+        temporary.write_text(
+            json.dumps({"pid": os.getpid(), "heartbeat": time.monotonic()})
+        )
         temporary.replace(HEALTH_FILE)
         await anyio.sleep(1)
 
 
 def configure_logging():
-    # Library error messages can contain URLs, prompts or driver details. Only
-    # our application-owned structured events reach Docker's stderr stream.
-    logging.disable(logging.NOTSET)
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(logging.NullHandler())
-    root.setLevel(logging.CRITICAL + 1)
-    LOGGER.handlers.clear()
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    LOGGER.addHandler(handler)
-    LOGGER.setLevel(logging.INFO)
-    LOGGER.propagate = False
-    # Reflection warnings can contain identifiers and driver details.
+    # Raw SQLAlchemy/driver messages may contain SQL or credentials.
+    logging.disable(logging.CRITICAL)
     warnings.filterwarnings("ignore")
 
 
@@ -78,11 +61,10 @@ def configure_docker_stdio():
 
 
 def create_server(settings=None):
-    generator = Generator(settings or Settings.load())
+    executor = Executor(settings or Settings.load())
 
     @asynccontextmanager
     async def lifespan(server):
-        log_event("server.ready", stage="idle", transport="stdio", tool_count=1)
         try:
             if sys.argv[1:] == ["--docker-stdio"]:
                 async with anyio.create_task_group() as tasks:
@@ -96,46 +78,28 @@ def create_server(settings=None):
         finally:
             if sys.argv[1:] == ["--docker-stdio"]:
                 HEALTH_FILE.unlink(missing_ok=True)
-            generator.engine.dispose()
-            log_event("server.stopped", stage="shutdown")
+            executor.engine.dispose()
 
     server = MCPServer(
         "Atlas SQL",
         lifespan=lifespan,
         log_level="CRITICAL",
-        instructions=PROMPTS["mcp"],
+        instructions="Execute one read-only SELECT against the configured database. "
+        "All rows are returned. Choose explicit filters or limits when needed.",
     )
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
         structured_output=True,
     )
-    async def generate_sql(question: str) -> dict[str, Any]:
-        """Generate a SELECT with joins, filters, grouping and calculations; never execute it."""
-        token = REQUEST_ID.set(uuid.uuid4().hex)
-        log_event("tool.received", stage="received", tool="generate_sql", question_bytes=len(question.encode()))
+    async def execute_select(sql: str) -> dict[str, Any]:
+        """Execute one SELECT unchanged; return columns, rows and row_count."""
         try:
-            result = await anyio.to_thread.run_sync(generator.generate, question)
-            log_event("tool.completed", stage="completed", execution_performed=False)
-            return result
-        except ClarificationNeeded as error:
-            log_event("tool.clarification_required", stage="clarification", reason=error.reason, execution_performed=False)
-            return {
-                "status": "needs_clarification",
-                "reason": error.reason,
-                "clarification": str(error),
-                "execution_performed": False,
-            }
-        except GenerationError as error:
-            log_event("tool.rejected", level=logging.WARNING, stage="rejected", error_type="GenerationError")
+            return await anyio.to_thread.run_sync(executor.execute, sql)
+        except QueryError as error:
             raise ToolError(str(error)) from None
-        except Exception as error:
-            log_event("tool.failed", level=logging.ERROR, stage="failed", error_type=type(error).__name__)
-            raise ToolError(
-                "Generation failed; check database access and DeepSeek configuration."
-            ) from None
-        finally:
-            REQUEST_ID.reset(token)
+        except Exception:  # noqa: BLE001 - do not expose raw dependency errors.
+            raise ToolError("Query execution failed.") from None
 
     return server
 
@@ -148,12 +112,12 @@ if __name__ == "__main__":
         docker_stdio = sys.argv[1:] == ["--docker-stdio"]
         if sys.argv[1:] and not docker_stdio:
             raise ValueError("Unsupported startup option")
-        log_event("server.starting", stage="startup", transport="stdio", docker_stdio=docker_stdio)
         if docker_stdio:
             configure_docker_stdio()
         create_server().run(transport="stdio")
-    except Exception as error:
-        log_event("server.failed", level=logging.ERROR, stage="startup", error_type=type(error).__name__,
-                  database_configured=bool(os.getenv("DATABASE_URL")),
-                  provider_configured=bool(os.getenv("DEEPSEEK_API_KEY")))
+    except Exception:  # noqa: BLE001 - do not expose raw dependency errors.
+        print(
+            "SQL MCP startup failed; check configuration and driver installation.",
+            file=sys.stderr,
+        )
         sys.exit(1)
