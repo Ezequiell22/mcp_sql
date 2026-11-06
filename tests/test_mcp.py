@@ -1,6 +1,7 @@
 """Offline contract regressions: real LangChain generation, no generated query execution."""
 
 import json
+import re
 import time
 
 import pytest
@@ -25,11 +26,25 @@ class Model(FakeListChatModel):
         return result
 
     def with_structured_output(self, schema, **kwargs):
+        if schema is ScopeDecision:
+            def choose_scope(messages):
+                payload = json.loads(messages[-1][1])
+                catalog = payload["catalog"]
+                question = payload["request"].casefold()
+                desired = "archive" if "archiv" in question else "reports" if "report ids" in question else "erp"
+                if "anchor" in question:
+                    desired = "public" if "public" in catalog else "dbo"
+                return ScopeDecision(outcome="selected", names=[desired if desired in catalog else next(iter(catalog))])
+            return RunnableLambda(choose_scope)
         assert schema is Selection
 
         def select(messages):
             candidates = json.loads(messages[-1][1])["candidates"]
             self.selections.append(candidates)
+            if "table names" in messages[0][1]:
+                sql = self.responses[self.i]
+                referenced = {name.casefold() for name in re.findall(r"(?:FROM|JOIN)\s+(?:\w+\.)?(\w+)", sql, re.I)}
+                return Selection(names=[name for name in candidates if name.rsplit(".", 1)[-1].casefold() in referenced] if referenced else candidates)
             # Stable business target and the key/value columns of the wide table.
             names = [n for n in candidates if n in {"target", "id", "c699"}]
             return Selection(names=names)
@@ -79,9 +94,7 @@ def test_real_chain_preserves_sql_and_reads_metadata_only(database, sql):
     engine, _, statements = database
     model = Model(responses=[sql])
     result = Generator(settings(), engine=engine, model=model).generate(
-        "Totals by customer, calculated as double the order amount, where amount exceeds 10",
-        ["customers", "orders"],
-    )
+        "Totals by customer, calculated as double the order amount, where amount exceeds 10")
     assert result["sql"] == sql
     assert result["execution_performed"] is False
     assert model.prompts and "CREATE TABLE" in model.prompts[0]
@@ -144,7 +157,7 @@ def test_truncated_model_response_rejected(database):
     engine, _, _ = database
     model = Model(responses=["SELECT id FROM main.orders"], reason="length")
     with pytest.raises(GenerationError, match="finish generating"):
-        Generator(settings(), engine=engine, model=model).generate("Order IDs", ["orders"])
+        Generator(settings(), engine=engine, model=model).generate("Order IDs")
 
 
 def test_prompt_is_external_and_question_is_a_separate_message(database):
@@ -158,7 +171,7 @@ def test_prompt_is_external_and_question_is_a_separate_message(database):
 
     question = "Return order IDs above 10."
     model = InspectModel(responses=["SELECT id FROM main.orders WHERE id > 10"])
-    Generator(settings(), engine=engine, model=model).generate(question, ["orders"])
+    Generator(settings(), engine=engine, model=model).generate(question)
     assert module.SQL_PROMPT.input_variables == ["dialect", "input", "table_info", "top_k"]
     assert messages[0].type == "system" and "CREATE TABLE" in messages[0].content
     assert messages[1].type == "human" and question in messages[1].content
@@ -170,8 +183,7 @@ def test_unanswerable_request_has_actionable_error(database):
     model = Model(responses=["CANNOT_GENERATE"])
     with pytest.raises(GenerationError, match="clearer business rules"):
         Generator(settings(), engine=engine, model=model).generate(
-            "Unknown business KPI", ["orders"]
-        )
+            "Unknown business KPI")
 
 
 def test_700_columns_are_narrowed_before_prompt(tmp_path):
@@ -187,8 +199,7 @@ def test_700_columns_are_narrowed_before_prompt(tmp_path):
     model = Model(responses=["SELECT id, c699 FROM main.wide"])
     try:
         result = Generator(settings(), engine=engine, model=model).generate(
-            "Get id and c699", ["wide"]
-        )
+            "Get id and c699")
         assert result["execution_performed"] is False
         assert len(model.selections[0]) == 701
         assert "c699" in model.prompts[0] and "c698" not in model.prompts[0]
@@ -218,13 +229,9 @@ def test_3000_tables_are_selected_in_bounded_batches(database, monkeypatch):
     assert "irrelevant_" not in model.prompts[0]
 
 
-@pytest.mark.parametrize("names", [[], ["missing"], ["orders"] * (module.MAX_TABLES + 1)])
-def test_explicit_table_scope_rejected(database, names):
-    engine, _, _ = database
-    with pytest.raises(GenerationError):
-        Generator(settings(), engine=engine, model=Model(responses=["unused"])).generate(
-            "Orders", names
-        )
+def test_generator_accepts_only_the_business_question():
+    import inspect
+    assert list(inspect.signature(Generator.generate).parameters) == ["self", "question"]
 
 
 def test_selection_rejects_invented_metadata(database, monkeypatch):
@@ -315,8 +322,8 @@ def test_mcp_only_accepts_question_and_uses_automatic_scope(monkeypatch):
         def __init__(self, settings):
             self.engine = None
 
-        def generate(self, question, table_names, schema):
-            assert question == "IDs" and table_names is None and schema is None
+        def generate(self, question):
+            assert question == "IDs"
             return {
                 "sql": "SELECT id FROM archive.orders",
                 "schema": "archive",
@@ -380,8 +387,7 @@ def test_narrowing_preserves_foreign_key_to_non_primary_unique_column(tmp_path):
     model = Model(responses=[sql])  # Selector intentionally returns only the parent's id.
     try:
         result = Generator(settings(), engine=engine, model=model).generate(
-            "Parent IDs with children", ["parent", "child"]
-        )
+            "Parent IDs with children")
         assert result["sql"] == sql
         assert "business_key" in model.prompts[0]
         assert "FOREIGN KEY(parent_key) REFERENCES parent (business_key)" in model.prompts[0]
@@ -460,8 +466,7 @@ def test_real_deepseek_adapter_json_selection_and_sql_generation(tmp_path):
         )
         try:
             result = Generator(settings(), engine=engine, model=model).generate(
-                "IDs and c99", ["wide"]
-            )
+                "IDs and c99")
         finally:
             engine.dispose()
     assert result["sql"] == sql and not result["execution_performed"]
@@ -547,11 +552,11 @@ def test_empty_database_reports_configuration_problem_without_requesting_identif
         engine.dispose()
 
 
-def test_explicit_empty_scope_does_not_fall_back(tmp_path):
+def test_empty_default_scope_does_not_authorize_invented_objects(tmp_path):
     engine = scoped_database(tmp_path, ["erp"])
     try:
-        with pytest.raises(GenerationError, match="requested scope"):
-            Generator(settings(), engine=engine, model=Model(responses=["unused"])).generate("Show orders", schema="main")
+        with pytest.raises(GenerationError, match="schema checks"):
+            Generator(settings(), engine=engine, model=Model(responses=["SELECT id FROM main.orders"])).generate("Show orders")
     finally:
         engine.dispose()
 
@@ -605,7 +610,7 @@ def test_execution_events_cover_stages_without_logging_business_content(database
     question = "private-business-question-marker"
     sql = "SELECT id FROM main.orders"
     with caplog.at_level(logging.INFO, logger=module.LOGGER.name):
-        Generator(settings(), engine=engine, model=Model(responses=[sql])).generate(question, ["orders"])
+        Generator(settings(), engine=engine, model=Model(responses=[sql])).generate(question)
     entries = [json.loads(record.message) for record in caplog.records if record.name == module.LOGGER.name]
     events = {entry["event"] for entry in entries}
     assert {"generation.started", "metadata.discovery.started", "tables.selected", "columns.selected",
@@ -628,7 +633,7 @@ def test_dependency_failure_logs_stage_and_type_without_raw_error(database, capl
 
     with caplog.at_level(logging.INFO, logger=module.LOGGER.name):
         with pytest.raises(RuntimeError):
-            Generator(settings(), engine=engine, model=BrokenModel(responses=["unused"])).generate("Order IDs", ["orders"])
+            Generator(settings(), engine=engine, model=BrokenModel(responses=["unused"])).generate("Order IDs")
     entries = [json.loads(record.message) for record in caplog.records if record.name == module.LOGGER.name]
     failure = entries[-1]
     assert failure["event"] == "generation.failed"

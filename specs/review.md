@@ -1,5 +1,9 @@
 # MCP request-flow review — November 6, 2026
 
+This historical record predates the production hardening and question-only
+generator follow-up. See production.md, tech-lead-review.md and verification.md
+for the current contract, worker lifecycle, schema defaults and evidence.
+
 ## Findings addressed
 
 1. **Question-only requests stopped at an empty default schema.** Discovery now

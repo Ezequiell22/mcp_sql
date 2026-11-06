@@ -70,6 +70,8 @@ def postgres(request):
                 time.sleep(0.25)
         with connection:
             connection.execute("CREATE ROLE reader LOGIN PASSWORD 'disposable-reader-only'")
+            connection.execute("CREATE ROLE scoped_reader LOGIN PASSWORD 'disposable-scoped-only'")
+            connection.execute("ALTER ROLE scoped_reader SET search_path = erp, public")
             connection.execute(
                 psycopg.sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
                     psycopg.sql.Identifier("report+reader"),
@@ -114,14 +116,18 @@ def postgres(request):
             )
             connection.execute("CREATE TABLE public.anchor(id integer PRIMARY KEY)")
             connection.execute("CREATE VIEW archive.order_report AS SELECT id, amount FROM archive.orders")
+            connection.execute("CREATE MATERIALIZED VIEW archive.order_totals AS SELECT customer_id, SUM(amount) AS total FROM archive.orders GROUP BY customer_id WITH NO DATA")
             connection.execute("CREATE TABLE archive.receipts(id integer PRIMARY KEY, order_id integer REFERENCES erp.orders(id))")
             connection.execute(
                 "GRANT SELECT ON ALL TABLES IN SCHEMA erp, archive, public TO reader"
             )
             connection.execute('GRANT USAGE ON SCHEMA erp TO "report+reader"')
             connection.execute('GRANT SELECT ON ALL TABLES IN SCHEMA erp TO "report+reader"')
+            connection.execute("GRANT USAGE ON SCHEMA erp TO scoped_reader")
+            connection.execute("GRANT SELECT ON ALL TABLES IN SCHEMA erp TO scoped_reader")
         yield {
             "url": f"postgresql+psycopg://reader:disposable-reader-only@127.0.0.1:{port}/postgres",
+            "scoped_url": f"postgresql+psycopg://scoped_reader:disposable-scoped-only@127.0.0.1:{port}/postgres",
             "container_url": "postgresql+psycopg://reader:disposable-reader-only@127.0.0.1:5432/postgres",
             "container": container,
             "urls": [
@@ -163,7 +169,7 @@ def test_postgres_connection_url_variants(postgres, monkeypatch, variant):
     sql = "SELECT id FROM erp.orders WHERE id > 10"
     generator = Generator(settings, model=Model(responses=[sql]))
     try:
-        result = generator.generate("Order IDs above 10", ["orders"], "erp")
+        result = generator.generate("Order IDs above 10")
         assert result["sql"] == sql and not result["execution_performed"]
     finally:
         generator.engine.dispose()
@@ -186,7 +192,7 @@ def test_postgres_connection_failures_are_sanitized(postgres, failure):
         url = url.update_query_dict({"sslmode": "verify-full"})
     server = create_server(Settings(url.render_as_string(hide_password=False), "offline-only"))
     with pytest.raises(ToolError) as error:
-        asyncio.run(server.call_tool("generate_sql", {"question": "Order IDs", "schema": "erp"}))
+        asyncio.run(server.call_tool("generate_sql", {"question": "Order IDs"}))
     message = str(error.value)
     assert "Generation failed" in message
     assert "disposable" not in message and "postgresql" not in message
@@ -205,7 +211,7 @@ def test_request_schemas_are_independent_and_metadata_only(postgres):
 
     try:
         for schema, sql in zip(["erp", "archive", "erp"], queries, strict=True):
-            result = generator.generate("Order IDs", ["orders"], schema=schema)
+            result = generator.generate("Archived order IDs" if schema == "archive" else "Current order IDs")
             assert result["sql"] == sql and result["schema"] == schema
             assert result["tables"] == [f"{schema}.orders"]
             assert result["execution_performed"] is False
@@ -214,12 +220,37 @@ def test_request_schemas_are_independent_and_metadata_only(postgres):
         )
         with generator.engine.connect() as connection:
             assert connection.exec_driver_sql("SHOW transaction_read_only").scalar() == "on"
-        with pytest.raises(GenerationError, match="data scope is unavailable"):
-            generator.generate("Orders", schema="does_not_exist")
         # Previous inspection of erp must not authorize an erp reference in archive.
         generator.model = Model(responses=["SELECT id FROM erp.orders"])
         with pytest.raises(GenerationError, match="schema checks"):
-            generator.generate("Orders", ["orders"], schema="archive")
+            generator.generate("Archived order IDs")
+    finally:
+        generator.engine.dispose()
+
+
+def test_postgres_fills_native_and_custom_connection_defaults(postgres):
+    for url, question, default, sql in [
+        (postgres["url"], "Anchor IDs", "public", "SELECT id FROM anchor"),
+        (postgres["scoped_url"], "Current order IDs", "erp", "SELECT id FROM orders"),
+    ]:
+        generator = Generator(Settings(url, "offline"), model=Model(responses=[sql]))
+        try:
+            result = generator.generate(question)
+            assert result["default_schema"] == default
+            assert sqlglot.parse_one(result["sql"], read="postgres").find(exp.Table).db == default
+        finally:
+            generator.engine.dispose()
+
+
+def test_postgres_materialized_view_metadata(postgres):
+    sql = "SELECT customer_id, total FROM archive.order_totals"
+    generator = Generator(Settings(postgres["url"], "offline"), model=Model(responses=[sql]))
+    statements = []
+    event.listen(generator.engine, "before_cursor_execute", lambda c, cur, s, p, ctx, many: statements.append(s))
+    try:
+        result = generator.generate("Archived order totals by customer ID")
+        assert result["sql"] == sql and result["tables"] == ["archive.order_totals"]
+        assert not any("from archive.order_totals" in s.lower() for s in statements)
     finally:
         generator.engine.dispose()
 

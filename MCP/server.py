@@ -115,7 +115,7 @@ def create_server(settings=None):
         token = REQUEST_ID.set(uuid.uuid4().hex)
         log_event("tool.received", stage="received", tool="generate_sql", question_bytes=len(question.encode()))
         try:
-            result = await anyio.to_thread.run_sync(generator.generate, question, None, None)
+            result = await anyio.to_thread.run_sync(generator.generate, question)
             log_event("tool.completed", stage="completed", execution_performed=False)
             return result
         except ClarificationNeeded as error:

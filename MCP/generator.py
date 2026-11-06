@@ -35,7 +35,6 @@ from sqlglot.schema import MappingSchema
 
 from MCP.settings import DIALECTS, Settings
 
-MAX_TABLES = 20
 BATCH_SIZE = 250
 MAX_COLUMNS = 80
 MAX_CONTEXT_BYTES = 64_000
@@ -95,7 +94,7 @@ class GenerationError(Exception):
 
 
 class Selection(BaseModel):
-    names: list[str] = Field(default_factory=list, max_length=80)
+    names: list[str] = Field(default_factory=list)
 
 
 class ScopeDecision(BaseModel):
@@ -115,7 +114,7 @@ PROMPTS = tomllib.loads(Path(__file__).with_name("prompts.toml").read_text())
 SQL_PROMPT = ChatPromptTemplate.from_messages([("system", PROMPTS["sql"]), ("human", "{input}")])
 
 
-def validate_sql(sql, dialect, metadata, schema):
+def validate_sql(sql, dialect, metadata, schema, *, default_schema=None):
     """Small structural guard, not a database compiler or business-correctness proof."""
     sql = sql.strip()
     fenced = re.fullmatch(r"```(?:sql)?\s*\n(.*?)\n```", sql, re.S | re.I)
@@ -130,6 +129,12 @@ def validate_sql(sql, dialect, metadata, schema):
             "The model did not return a complete SQL query within the output budget."
         )
     try:
+        tokens = sqlglot.Dialect.get_or_raise(dialect).tokenize(sql)
+        if any(comment.lstrip().startswith(("!", "+", "M!", "m!"))
+               for token in tokens for comment in (token.comments or [])):
+            # MySQL executable comments can hide semantics absent from the AST.
+            # Token comments distinguish them from ordinary quoted string data.
+            raise ValueError
         statements = sqlglot.parse(sql, read=dialect, error_level=ErrorLevel.RAISE)
         if len(statements) != 1 or not isinstance(statements[0], (exp.Select, exp.SetOperation)):
             raise ValueError
@@ -152,7 +157,7 @@ def validate_sql(sql, dialect, metadata, schema):
                 normalize(column.name): str(column.type) for column in table.columns
             }
         for node in tree.walk():
-            if isinstance(node, (exp.Hint, exp.WithTableHint, exp.NextValueFor)):
+            if isinstance(node, (exp.Hint, exp.WithTableHint, exp.QueryOption, exp.NextValueFor)):
                 raise ValueError
             if isinstance(node, exp.Func):
                 if isinstance(node.parent, exp.Dot):
@@ -167,10 +172,17 @@ def validate_sql(sql, dialect, metadata, schema):
                 raise ValueError
             if not isinstance(table.this, exp.Identifier):
                 raise ValueError
+        qualified_default = False
         for scope in traverse_scope(tree):
             for source in scope.sources.values():
                 if isinstance(source, exp.Table):
-                    if source.db not in columns or source.name not in columns[source.db]:
+                    if not source.db and default_schema and normalize(default_schema) in columns:
+                        # The latest user contract authorizes filling an omitted
+                        # physical schema from this connection's verified default.
+                        source.set("db", exp.to_identifier(default_schema, quoted=True))
+                        qualified_default = True
+                    source_schema = normalize(source.db)
+                    if source_schema not in columns or source.name not in columns[source_schema]:
                         raise ValueError
         qualify(
             tree.copy(),
@@ -185,6 +197,10 @@ def validate_sql(sql, dialect, metadata, schema):
             isinstance(n, exp.Star) and not isinstance(n.parent, exp.Count) for n in tree.walk()
         ):
             raise ValueError
+        if qualified_default:
+            sql = tree.sql(dialect=dialect, unsupported_level=ErrorLevel.RAISE)
+            if len(sql.encode()) > 64_000:
+                raise ValueError
     except Exception:
         raise GenerationError(
             "Generated SQL failed SELECT-only or schema checks; refine the request."
@@ -226,7 +242,7 @@ class RequestDatabase(SQLDatabase):
         return self.context
 
 
-def generation_worker(connection, settings, question, table_names, schema, request_id):
+def generation_worker(connection, settings, question, request_id):
     # Child output must never enter the MCP protocol; only safe structured logs
     # go to stderr. Settings travel through multiprocessing, never command args.
     from MCP.server import configure_logging
@@ -237,7 +253,7 @@ def generation_worker(connection, settings, question, table_names, schema, reque
     generator = None
     try:
         generator = Generator(settings, isolate=False)
-        connection.send(("generated", generator.generate(question, table_names, schema)))
+        connection.send(("generated", generator.generate(question)))
     except ClarificationNeeded as error:
         connection.send(("clarification", (str(error), error.reason)))
     except GenerationError as error:
@@ -262,7 +278,7 @@ class Generator:
         if postgres:
             connect_args = {
                 "connect_timeout": 10,
-                "options": "-c default_transaction_read_only=on -c statement_timeout=10000 -c search_path=pg_catalog",
+                "options": "-c default_transaction_read_only=on -c statement_timeout=10000",
             }
         elif backend == "mssql+pyodbc":
             connect_args = {"timeout": 10}
@@ -316,7 +332,7 @@ class Generator:
         selection_stage = "table_selection" if "table names" in purpose else "column_selection"
         started = time.monotonic()
         log_event("selection.started", stage=selection_stage, candidate_count=len(candidates), limit=limit)
-        if len(candidates) <= limit:
+        if len(candidates) <= limit and ("table names" not in purpose or len(candidates) <= 1):
             log_event("selection.completed", selected_count=len(candidates), provider_call=False, elapsed_ms=0)
             return list(candidates)
         messages = [
@@ -346,9 +362,7 @@ class Generator:
                   elapsed_ms=round((time.monotonic() - started) * 1000))
         return names
 
-    def generate(
-        self, question: str, table_names: list[str] | None = None, schema: str | None = None
-    ):
+    def generate(self, question: str):
         started = time.monotonic()
         stage_token = STAGE.set("validation")
         acquired = False
@@ -356,17 +370,13 @@ class Generator:
         try:
             if not question.strip() or len(question.encode()) > 8000:
                 raise GenerationError("The request must contain 1–8000 UTF-8 bytes.")
-            if table_names is not None and (not table_names or len(table_names) > MAX_TABLES):
-                raise GenerationError(f"Supply 1–{MAX_TABLES} exact table names, or omit table_names.")
-            if schema is not None and (not schema.strip() or len(schema) > 128):
-                raise GenerationError("Supply an exact schema name containing 1–128 characters.")
             acquired = self.lock.acquire(blocking=False)
             if not acquired:
                 raise GenerationError("The server is busy generating SQL; retry shortly.")
             if self.isolate:
-                result = self._isolated_generate(question, table_names, schema, started)
+                result = self._isolated_generate(question, started)
             else:
-                result = self._generate(question, table_names, schema, started + REQUEST_TIMEOUT)
+                result = self._generate(question, started + REQUEST_TIMEOUT)
             log_event("generation.completed", stage="completed", elapsed_ms=round((time.monotonic() - started) * 1000),
                       table_count=len(result["tables"]), sql_bytes=len(result["sql"].encode()), execution_performed=False)
             return result
@@ -397,21 +407,38 @@ class Generator:
                 self.lock.release()
             STAGE.reset(stage_token)
 
-    def _isolated_generate(self, question, table_names, schema, started):
+    def _isolated_generate(self, question, started):
         context = multiprocessing.get_context("spawn")
         receive, send = context.Pipe(duplex=False)
         worker = context.Process(target=generation_worker, args=(
-            send, self.settings, question, table_names, schema, REQUEST_ID.get(),
+            send, self.settings, question, REQUEST_ID.get(),
         ), daemon=True)
+        watchdog = None
+        expired = threading.Event()
+
+        def kill_overdue_worker():
+            expired.set()
+            try:
+                worker.kill()
+            except (OSError, ValueError):
+                pass  # A worker that already exited needs no further cleanup.
+
         try:
             worker.start()
             send.close()
             remaining = max(0, REQUEST_TIMEOUT - (time.monotonic() - started))
+            # poll() only bounds waiting for the first IPC bytes. A watchdog
+            # also covers a worker stalled halfway through a large reply.
+            watchdog = threading.Timer(remaining, kill_overdue_worker)
+            watchdog.daemon = True
+            watchdog.start()
             if not receive.poll(remaining):
                 raise GenerationError("This request took too long; try a more focused business question.")
             try:
                 outcome, payload = receive.recv()
-            except EOFError:
+            except (EOFError, OSError):
+                if expired.is_set() or time.monotonic() - started >= REQUEST_TIMEOUT:
+                    raise GenerationError("This request took too long; try a more focused business question.") from None
                 raise GenerationError("Generation worker stopped; retry the complete request.") from None
             if time.monotonic() - started >= REQUEST_TIMEOUT:
                 raise GenerationError("This request took too long; try a more focused business question.")
@@ -421,6 +448,9 @@ class Generator:
                 raise GenerationError(payload)
             return payload
         finally:
+            if watchdog is not None:
+                watchdog.cancel()
+                watchdog.join()
             receive.close()
             send.close()
             if worker.pid is not None:
@@ -432,7 +462,7 @@ class Generator:
                     worker.join(timeout=1)
                 worker.close()
 
-    def _generate(self, question, table_names, schema, deadline):
+    def _generate(self, question, deadline):
         def check_budget():
             if time.monotonic() >= deadline:
                 raise GenerationError("This request took too long; try a more focused business question.")
@@ -440,6 +470,13 @@ class Generator:
         log_event("metadata.discovery.started", stage="metadata_discovery")
         inspector = inspect(self.engine)
         available_schemas = inspector.get_schema_names()
+        default_schema = inspector.default_schema_name
+        if not default_schema:
+            # Driver defaults are fallbacks only, never authorization to invent
+            # an object absent from the actual selected metadata.
+            default_schema = {"postgresql": "public", "mssql": "dbo", "sqlite": "main"}.get(
+                self.engine.dialect.name, self.engine.url.database)
+
 
         def objects(name):
             check_budget()
@@ -453,50 +490,42 @@ class Generator:
                 pass
             return sorted(tables | views)
 
-        if schema is not None:
-            if schema not in available_schemas:
-                raise GenerationError("The requested data scope is unavailable. Ask the administrator to check access.")
-            catalog = {schema: objects(schema)}
-            scopes = [schema]
+        catalog = {}
+        count = 0
+        for name in sorted(available_schemas):
+            if name.casefold() in {"information_schema", "sys", "mysql", "performance_schema"} or name.startswith("pg_"):
+                continue
+            names = objects(name)
+            count += len(names)
+            if count > 10_000 or (names and len(catalog) >= 100):
+                raise GenerationError("The connected data catalog is too large. Ask the administrator to narrow access.")
+            if names:
+                catalog[name] = names
+        log_event("metadata.catalog.discovered", schema_count=len(catalog), table_count=count)
+        if not catalog:
+            raise GenerationError("No usable data is visible to this connection. Ask the administrator to check the database and reader permissions.")
+        if len(catalog) == 1:
+            scopes = list(catalog)
         else:
-            catalog = {}
-            count = 0
-            for name in sorted(available_schemas):
-                if name.casefold() in {"information_schema", "sys", "mysql", "performance_schema"} or name.startswith("pg_"):
-                    continue
-                names = objects(name)
-                count += len(names)
-                if count > 10_000 or (names and len(catalog) >= 100):
-                    raise GenerationError("The connected data catalog is too large. Ask the administrator to narrow access.")
-                if names:
-                    catalog[name] = names
-            log_event("metadata.catalog.discovered", schema_count=len(catalog), table_count=count)
-            if not catalog:
-                raise GenerationError("No usable data is visible to this connection. Ask the administrator to check the database and reader permissions.")
-            if len(catalog) == 1:
-                scopes = list(catalog)
-            else:
-                context = json.dumps({"request": question, "catalog": catalog}, ensure_ascii=False)
-                if len(context.encode()) > MAX_CONTEXT_BYTES:
-                    raise GenerationError("The connected data catalog is too large. Ask the administrator to narrow access.")
-                check_budget()
-                scope_started = time.monotonic()
-                log_event("schema.selection.started", stage="schema_selection", candidate_count=len(catalog), context_bytes=len(context.encode()))
-                result = self.model.with_structured_output(ScopeDecision, method="json_mode").invoke(
-                    [("system", PROMPTS["schema_selection"]), ("human", context)])
-                log_event("schema.selection.completed", outcome=result.outcome, selected_count=len(result.names),
-                          elapsed_ms=round((time.monotonic() - scope_started) * 1000))
-                if result.outcome != "selected":
-                    if result.names:
-                        raise GenerationError("The model returned an inconsistent source selection.")
-                    if result.outcome == "no_match":
-                        raise ClarificationNeeded("I could not match this request to the available business data. Explain what the business entity represents and which information or measures to include.", reason="metadata_no_match")
-                    raise ClarificationNeeded("Please define the business entity, information or measures, and period for this request. A broad overview needs a concrete business definition.", reason="business_scope_ambiguous")
-                scopes = list(dict.fromkeys(result.names))
-                if not scopes or len(scopes) > 8 or len(scopes) != len(result.names) or not set(scopes) <= set(catalog):
-                    raise GenerationError("The model returned an invalid source selection; retry the complete business question.")
-        if not any(catalog.values()):
-            raise GenerationError("No usable data is visible in the requested scope. Ask the administrator to check the database and reader permissions.")
+            context = json.dumps({"request": question, "catalog": catalog, "default_schema": default_schema}, ensure_ascii=False)
+            if len(context.encode()) > MAX_CONTEXT_BYTES:
+                raise GenerationError("The connected data catalog is too large. Ask the administrator to narrow access.")
+            check_budget()
+            scope_started = time.monotonic()
+            log_event("schema.selection.started", stage="schema_selection", candidate_count=len(catalog), context_bytes=len(context.encode()))
+            result = self.model.with_structured_output(ScopeDecision, method="json_mode").invoke(
+                [("system", PROMPTS["schema_selection"]), ("human", context)])
+            log_event("schema.selection.completed", outcome=result.outcome, selected_count=len(result.names),
+                      elapsed_ms=round((time.monotonic() - scope_started) * 1000))
+            if result.outcome != "selected":
+                if result.names:
+                    raise GenerationError("The model returned an inconsistent source selection.")
+                if result.outcome == "no_match":
+                    raise ClarificationNeeded("I could not match this request to the available business data. Explain what the business entity represents and which information or measures to include.", reason="metadata_no_match")
+                raise ClarificationNeeded("Please define the business entity, information or measures, and period for this request. A broad overview needs a concrete business definition.", reason="business_scope_ambiguous")
+            scopes = list(dict.fromkeys(result.names))
+            if not scopes or len(scopes) > 8 or len(scopes) != len(result.names) or not set(scopes) <= set(catalog):
+                raise GenerationError("The model returned an invalid source selection; retry the complete business question.")
         single_schema = scopes[0] if len(scopes) == 1 else None
         candidates = {}
         for scope in scopes:
@@ -506,17 +535,12 @@ class Generator:
                     raise GenerationError("Ambiguous catalog identifiers; ask the administrator to review object names.")
                 candidates[key] = (scope, name)
         available = sorted(candidates)
-        if table_names is not None:
-            selected = list(dict.fromkeys(table_names))
-            if not set(selected) <= set(available):
-                raise GenerationError("Requested tables are unavailable in the requested schema.")
-        else:
-            if len(available) > 10_000:
-                raise GenerationError("Schema exceeds automatic discovery budget; ask the administrator to narrow database access.")
-            choices = []
-            for start in range(0, len(available), BATCH_SIZE):
-                choices.extend(self._select(question, available[start:start + BATCH_SIZE], "table names", MAX_TABLES, deadline))
-            selected = self._select(question, choices, "table names", MAX_TABLES, deadline)
+        choices = []
+        for start in range(0, len(available), BATCH_SIZE):
+            batch = available[start:start + BATCH_SIZE]
+            choices.extend(self._select(question, batch, "table names", len(batch), deadline))
+        selected = choices if len(choices) <= BATCH_SIZE else self._select(
+            question, choices, "table names", len(choices), deadline)
         if not selected:
             raise ClarificationNeeded("No data matching this question was identified. Describe the business records and measures you need.", "metadata_no_match")
         selected_objects = [candidates[key] for key in selected]
@@ -578,7 +602,7 @@ class Generator:
                     # including namesakes in other selected schemas.
                     contexts.append(scoped_db.get_table_info([name]))
                     described_names.add(name)
-        context = "\n\n".join(contexts)
+        context = "Connection default schema (metadata only): " + json.dumps(default_schema) + "\n\n" + "\n\n".join(contexts)
         log_event("context.build.completed", context_bytes=len(context.encode()), sample_rows=0)
         if len(context.encode()) > MAX_CONTEXT_BYTES:
             raise GenerationError("Selected schema exceeds the context budget; narrow the request.")
@@ -593,11 +617,12 @@ class Generator:
         if dialect is None:
             raise GenerationError("Unsupported database dialect; consult the compatibility matrix.")
         log_event("sql.validation.started", stage="sql_validation")
-        sql = validate_sql(sql, dialect, metadata, single_schema)
+        sql = validate_sql(sql, dialect, metadata, single_schema, default_schema=default_schema)
         log_event("sql.validation.completed", execution_performed=False)
         return {
             "status": "generated", "sql": sql, "dialect": self.engine.dialect.name,
             "schema": single_schema, "schemas": sorted({scope for scope, _ in selected_objects}),
+            "default_schema": default_schema,
             "tables": [f"{scope}.{name}" for scope, name in selected_objects],
             "execution_performed": False,
             "warnings": ["Business meaning, database execution and query cost are not verified."],

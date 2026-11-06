@@ -1,12 +1,48 @@
 # Tech lead review — November 6, 2026
 
-## Verdict
+## Resolution after implementation
+
+The original findings below describe the pre-fix working tree. They have been
+addressed within the explicit production contract in [production.md](production.md):
+
+- Connection policy and SQL parser mapping now explicitly cover PostgreSQL,
+  SQL Server and MySQL. MySQL has a pinned driver, verified TLS, read-only metadata
+  sessions and disposable integration coverage. Unsupported families fail closed;
+  universal database compatibility is not claimed.
+- Metadata discovery includes views, PostgreSQL materialized views and multiple
+  selected schemas. Cross-schema foreign keys are preserved. Both the MCP tool
+  and generator accept only question. Legacy schema/table arguments and their
+  validation messages are removed. There is no fixed selected-table count cap;
+  a regression selects 25 real SQLite tables. Byte/time budgets still apply.
+- Missing physical-table schemas are qualified only with the connection's verified
+  native default. PostgreSQL public, custom reader defaults, SQL Server dbo,
+  MySQL database defaults and CTE aliases are covered. Existing explicit schemas
+  are not rewritten and defaulting never authorizes an uninspected object.
+- Unclassified/qualified function calls, sequences, table/query hints and executable
+  MySQL comments are rejected. Parser errors now use SQLGlot's ErrorLevel enum;
+  the previous string silently allowed some parse errors. These additional gaps
+  were found during the implementation review and have regression coverage.
+- Production generation runs in a fresh terminable worker with a parent deadline,
+  bounded cleanup and immediate busy rejection. A watchdog covers partial
+  IPC replies as well as blocked database/provider calls. No request scope survives it.
+- Container health checks a fresh event-loop heartbeat and live listener PID.
+  A disposable Docker test suspends the listener and verifies unhealthy status
+  despite the remaining FIFO. Process-failure restart policy is explicit.
+- Optional LangSmith tracing is disabled and reflection warnings are suppressed
+  at the production entry point. Real metadata and DeepSeek remain the production
+  defaults; test doubles stay in tests.
+
+Actual final test results and remaining limits are recorded in verification.md.
+This is a reviewed implementation for the documented compatibility matrix, not
+certification of any target environment or arbitrary read-only SQL.
+
+## Original verdict
 
 Not ready for production under the requested database-agnostic, general read-only
 SQL contract. This review examines the current working tree, including existing
 uncommitted changes; it does not approve deployment. No runtime code was changed.
 
-## Findings, ordered by priority
+## Original findings, ordered by priority
 
 1. **P1 — Switching to another database family requires code changes.**
    `MCP/settings.py:26` permits only PostgreSQL/psycopg and SQL Server/pyodbc.
@@ -69,7 +105,7 @@ uncommitted changes; it does not approve deployment. No runtime code was changed
 - Mocks should remain in isolated tests. Requiring real data and real model
   responses in production does not justify removing deterministic test doubles.
 
-## Validation and second review
+## Initial review validation
 
 Required isolated suite: **67 passed, 26 skipped, one upstream deprecation
 warning**, 2.45 seconds. Database/Docker/live-provider integration was not enabled
@@ -78,5 +114,5 @@ fresh certification. The function probes exercised parsing/validation only.
 
 A second source review checked the findings against the documented boundaries:
 statelessness is not reported as broken, SQL execution is not attributed to the
-server, and finite resource limits remain necessary. These findings remain open;
-no runtime fixes or production approval are implied by this review.
+server, and finite resource limits remain necessary. At that initial review the findings remained open. The resolution section above
+and verification.md document the subsequent implementation and checks.

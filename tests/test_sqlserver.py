@@ -18,20 +18,31 @@ pytestmark = pytest.mark.skipif(
 # Only fixture administration uses a trusted-server override. Product connections
 # use a locally trusted certificate and hostname verification throughout.
 RUNNER = r"""
-import os, time
+import os, time, json, re
 from urllib.parse import quote
 import pyodbc
 with open("/etc/hosts", "a") as hosts:
     hosts.write("\n127.0.0.1 wrong.invalid\n")
 from sqlalchemy import event
-from MCP.generator import Generator, GenerationError
+from MCP.generator import Generator, GenerationError, ScopeDecision, Selection
 from MCP.settings import Settings
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.runnables import RunnableLambda
 class Model(FakeListChatModel):
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         result = super()._generate(messages, stop, run_manager, **kwargs)
         result.generations[0].message.response_metadata["finish_reason"] = "stop"
         return result
+    def with_structured_output(self, schema, **kwargs):
+        def choose(messages):
+            payload = json.loads(messages[-1][1])
+            if schema is ScopeDecision:
+                question = payload["request"].lower()
+                target = "archive" if "archived" in question else "dbo" if "anchor" in question else "erp"
+                return ScopeDecision(outcome="selected", names=[target])
+            referenced = {name.lower() for name in re.findall(r"(?:FROM|JOIN)\s+(?:\w+\.)?(\w+)", self.responses[self.i], re.I)}
+            return Selection(names=[name for name in payload["candidates"] if name.rsplit(".", 1)[-1].lower() in referenced])
+        return RunnableLambda(choose)
 
 password = "Fixture-Admin-8!"
 admin = "DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost;UID=sa;PWD=" + password + ";Encrypt=yes;TrustServerCertificate=yes;Connection Timeout=2"
@@ -88,21 +99,26 @@ for url in variants:
     try:
         for schema, table in [("erp", "orders"), ("archive", "orders"), ("dbo", "anchor")]:
             print("checking request", schema or "default", flush=True)
-            result = generator.generate("Return IDs", [table], schema=schema)
+            result = generator.generate("Archived order IDs" if schema == "archive" else "Anchor IDs" if schema == "dbo" else "Current order IDs")
             assert result["execution_performed"] is False
             assert result["schema"] == (schema or "dbo")
         assert not any("from erp.orders" in s.lower() or "from archive.orders" in s.lower() or "from dbo.anchor" in s.lower() for s in statements)
-        try:
-            generator.generate("Return IDs", schema="missing_schema")
-            raise AssertionError("Unknown schema accepted")
-        except GenerationError as error:
-            assert "unavailable" in str(error)
         generator.model = Model(responses=["SELECT id FROM erp.orders"])
         try:
-            generator.generate("Return IDs", ["orders"], schema="archive")
+            generator.generate("Archived order IDs")
             raise AssertionError("Cross-request schema accepted")
         except GenerationError:
             pass
+    finally:
+        generator.engine.dispose()
+
+    generator = Generator(settings, model=Model(responses=["SELECT id FROM anchor"]))
+    try:
+        import sqlglot
+        from sqlglot import exp
+        result = generator.generate("Anchor IDs")
+        assert result["default_schema"] == "dbo"
+        assert sqlglot.parse_one(result["sql"], read="tsql").find(exp.Table).db == "dbo"
     finally:
         generator.engine.dispose()
 
@@ -110,7 +126,9 @@ for url in variants:
     from MCP.generator import ScopeDecision
     class MultiSchemaModel(Model):
         def with_structured_output(self, schema, **kwargs):
-            return RunnableLambda(lambda _: ScopeDecision(outcome="selected", names=["erp", "archive"]))
+            if schema is ScopeDecision:
+                return RunnableLambda(lambda _: ScopeDecision(outcome="selected", names=["erp", "archive"]))
+            return super().with_structured_output(schema, **kwargs)
     sql = "SELECT o.id, v.amount FROM erp.orders o JOIN archive.order_report v ON v.id = o.id"
     generator = Generator(settings, model=MultiSchemaModel(responses=[sql]))
     try:

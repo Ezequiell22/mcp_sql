@@ -71,8 +71,7 @@ SQL Server uses ODBC Driver 18 with encryption and certificate verification.
 MySQL uses PyMySQL with a certificate- and hostname-verifying SSLContext; use
 `mysql+pymysql://reader:PASSWORD@db.example.com:3306/erp?ssl_ca=/path/to/ca.crt`
 for a private CA. Only `ssl_ca` and `charset` query options are accepted for MySQL.
-Its reader also needs SHOW VIEW to reflect views. PostgreSQL uses a pg_catalog-only
-search path and read-only sessions; MySQL uses read-only sessions. SQL Server
+Its reader also needs SHOW VIEW to reflect views. PostgreSQL preserves the connection's native default schema and uses read-only sessions; MySQL uses read-only sessions. SQL Server
 requires privileges restricted by the administrator; connection intent is not
 write authorization.
 
@@ -171,7 +170,11 @@ For example, the same server can receive these requests consecutively:
 LangChain selects the data scope and relevant tables automatically. Metadata is reconstructed per request; inspection of one schema never
 authorizes a reference to it in another request that did not select that schema. Every physical table
 in returned SQL must be schema-qualified to match the inspected request metadata; CTE aliases
-are exempt. No generated SQL is rewritten to silently change its schema.
+are exempt. Existing explicit schemas are never changed. An omitted physical-table
+schema is filled only with the connection's verified default, and only when that
+object exists in this request's selected metadata. CTE aliases are not qualified.
+The result exposes `default_schema`; defaults commonly are public, dbo, or the
+configured MySQL database, but reader accounts can override them.
 
 Successful result:
 
@@ -188,7 +191,8 @@ Successful result:
 }
 ```
 
-`schemas` lists schemas represented in the selected metadata. `schema` retains
+`default_schema` reports the connection default used for omitted physical
+qualifiers. `schemas` lists schemas represented in the selected metadata. `schema` retains
 the single-schema value for compatibility and is null for multi-schema scope.
 `tables` identifies context tables/views, potentially including tables unused by the
 final query. There are no sessions, cursors or finalize calls. Errors are MCP
@@ -207,8 +211,9 @@ the SQL, not an exploration history.
 - Automatic schema discovery considers up to 100 nonempty schemas and 10000
   tables/views in total; multi-schema selection context is limited to 64000 bytes.
   System and empty schemas are excluded.
-- Table/view names are selected in batches of 250, then reduced to at most 20
-  objects. Up to 10000 tables for automatic selection; larger catalogs must be narrowed through database permissions.
+- Table/view names are selected internally in batches of 250; there is no fixed
+  maximum number of selected tables and no user-supplied table list. Metadata
+  byte and request-time budgets bound how much context can be used. Up to 10000 tables for automatic selection; larger catalogs must be narrowed through database permissions.
 - Wide tables get model selection of up to 60 columns plus primary/join keys,
   with a final limit of 80 columns per table.
 - SQLAlchemy reflects selected tables/columns without recursively loading FK

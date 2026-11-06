@@ -77,6 +77,12 @@ def test_mysql_tls_metadata_views_cross_schema_and_readonly_session(mysql, monke
             # Session configuration only, never application rows/generated SQL.
             assert connection.exec_driver_sql("SELECT @@session.transaction_read_only").scalar() == 1
             assert connection.exec_driver_sql("SHOW SESSION STATUS LIKE 'Ssl_cipher'").one()[1]
+        generator.model = Model(responses=["SELECT id FROM orders"])
+        result = generator.generate("Current order IDs")
+        import sqlglot
+        from sqlglot import exp
+        assert result["default_schema"] == "erp"
+        assert sqlglot.parse_one(result["sql"], read="mysql").find(exp.Table).db == "erp"
     finally:
         generator.engine.dispose()
 
@@ -91,7 +97,7 @@ def test_mysql_tls_hostname_mismatch_is_rejected(mysql, monkeypatch):
     try:
         from sqlalchemy.exc import OperationalError
         with pytest.raises(OperationalError):
-            generator.generate("Order IDs", ["orders"], "erp")
+            generator.generate("Order IDs")
     finally:
         generator.engine.dispose()
 

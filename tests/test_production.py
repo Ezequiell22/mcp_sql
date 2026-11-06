@@ -29,6 +29,11 @@ from tests.test_mcp import Model, scoped_database, settings
     ("SELECT NEXT VALUE FOR main.seq FROM main.orders", "tsql"),
     ("SELECT main.side_effect(id) FROM main.orders", "tsql"),
     ("SELECT id FROM main.orders WITH (NOLOCK)", "tsql"),
+    ("SELECT id FROM main.orders OPTION (RECOMPILE)", "tsql"),
+    ("SELECT id FROM main.orders OPTION (MAXDOP 8)", "tsql"),
+    ("SELECT id FROM main.orders /*!50000 INTO OUTFILE '/tmp/x' */", "mysql"),
+    ("SELECT id FROM main.orders /*M! INTO OUTFILE '/tmp/x' */", "mysql"),
+    ("SELECT /*+ IndexScan(orders) */ id FROM main.orders", "postgres"),
     ("SELECT id FROM main.orders WHERE", "postgres"),
     ("SELECT id FROM main.orders ignored garbage", "postgres"),
 ])
@@ -55,7 +60,7 @@ def test_ordinary_read_functions_remain_supported(dialect, expression):
 class MultiSchemaModel(Model):
     def with_structured_output(self, schema, **kwargs):
         if schema is ScopeDecision:
-            return RunnableLambda(lambda _: ScopeDecision(outcome="selected", names=["erp", "archive"]))
+            return RunnableLambda(lambda messages: ScopeDecision(outcome="selected", names=["erp", "archive"]) if "compar" in json.loads(messages[-1][1])["request"].casefold() else ScopeDecision(outcome="selected", names=["erp"]))
         if schema is module.Selection:
             def choose(messages):
                 candidates = json.loads(messages[-1][1])["candidates"]
@@ -83,12 +88,12 @@ def test_multi_schema_join_and_views_use_fresh_real_metadata(tmp_path):
         assert result["sql"] == sql
         assert "CREATE TABLE archive.order_report" in model.prompts[0]
         assert not any(sql == statement or "FROM archive.order_report" in statement for statement in statements)
-        generator.generate("Current order IDs", ["orders"], "erp")
+        generator.generate("Current order IDs")
         assert "archive.order_report" not in model.prompts[-1]
         assert "archived reports" not in model.prompts[-1]
         generator.model = Model(responses=[sql])
         with pytest.raises(GenerationError, match="schema checks"):
-            generator.generate("Only current IDs", ["orders"], "erp")
+            generator.generate("Only current IDs")
     finally:
         engine.dispose()
 
@@ -110,7 +115,7 @@ def test_view_only_schema_is_discovered(tmp_path, monkeypatch):
     try:
         sql = "SELECT id FROM reports.order_report"
         result = Generator(settings(), engine=engine, model=Model(responses=[sql])).generate(
-            "Report IDs", ["order_report"], "reports")
+            "Report IDs")
         assert result["sql"] == sql
     finally:
         engine.dispose()
@@ -124,7 +129,13 @@ def crashed_worker(connection, *args):
     os._exit(1)
 
 
-@pytest.mark.parametrize("target,expected", [(stalled_worker, "took too long"), (crashed_worker, "worker stopped")])
+def partial_reply_worker(connection, *args):
+    import struct
+    os.write(connection.fileno(), struct.pack("!i", 65536) + b"x")
+    time.sleep(30)
+
+
+@pytest.mark.parametrize("target,expected", [(stalled_worker, "took too long"), (crashed_worker, "worker stopped"), (partial_reply_worker, "took too long")])
 def test_isolated_worker_is_reaped_and_admission_recovers(tmp_path, monkeypatch, target, expected):
     engine = scoped_database(tmp_path, ["erp"])
     generator = Generator(settings(), engine=engine, model=Model(responses=["unused"]))
@@ -177,3 +188,48 @@ def test_mysql_url_cannot_override_application_connection_policy(monkeypatch, qu
     monkeypatch.setenv("DEEPSEEK_API_KEY", "offline")
     with pytest.raises(ValueError, match="verified TLS"):
         Settings.load()
+
+
+@pytest.mark.parametrize("dialect,default", [("postgres", "public"), ("tsql", "dbo"), ("mysql", "erp"), ("sqlite", "main")])
+def test_missing_physical_schema_is_filled_from_verified_default(dialect, default):
+    import sqlglot
+    from sqlglot import exp
+    metadata = MetaData()
+    Table("orders", metadata, Column("id", Integer), schema=default)
+    sql = "WITH chosen AS (SELECT id FROM orders) SELECT id FROM chosen"
+    result = validate_sql(sql, dialect, metadata, default, default_schema=default)
+    tables = list(sqlglot.parse_one(result, read=dialect).find_all(exp.Table))
+    assert next(table for table in tables if table.name == "orders").db == default
+    assert next(table for table in tables if table.name == "chosen").db == ""
+
+
+def test_default_never_authorizes_an_uninspected_schema_or_table():
+    metadata = MetaData()
+    Table("orders", metadata, Column("id", Integer), schema="erp")
+    with pytest.raises(GenerationError):
+        validate_sql("SELECT id FROM orders", "postgres", metadata, "erp", default_schema="public")
+    with pytest.raises(GenerationError):
+        validate_sql("SELECT id FROM missing", "postgres", metadata, "erp", default_schema="erp")
+
+
+def test_executable_comment_marker_inside_literal_is_ordinary_data():
+    metadata = MetaData()
+    Table("orders", metadata, Column("id", Integer), schema="main")
+    sql = "SELECT id, '/*!example*/' AS label FROM main.orders"
+    assert validate_sql(sql, "mysql", metadata, "main") == sql
+
+
+def test_more_than_twenty_tables_can_be_selected_from_metadata(tmp_path):
+    from sqlalchemy import create_engine
+    engine = create_engine(f"sqlite:///{tmp_path / 'many.db'}")
+    metadata = MetaData()
+    for index in range(25):
+        Table(f"t{index}", metadata, Column("id", Integer))
+    metadata.create_all(engine)
+    sql = "SELECT t0.id FROM main.t0 t0 " + " ".join(f"JOIN main.t{i} t{i} ON t{i}.id = t0.id" for i in range(1, 25))
+    try:
+        result = Generator(settings(), engine=engine, model=Model(responses=[sql])).generate(
+            "Find matching IDs across all related records")
+        assert len(result["tables"]) == 25 and result["sql"] == sql
+    finally:
+        engine.dispose()
